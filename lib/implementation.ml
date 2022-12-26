@@ -537,4 +537,164 @@ module Day_7 = struct
 end
 
 let () = Framework.register ~day:7 (module Day_7)
+
+module Day_8 = struct
+  module Input = struct
+    type t = int array array
+
+    let load in_channel =
+      In_channel.input_lines in_channel
+      |> Array.of_list_map ~f:(fun string ->
+             String.to_array string
+             |> Array.map ~f:(fun char -> Char.to_int char - Char.to_int '0'))
+    ;;
+  end
+
+  module Visibility_map = struct
+    type 'a t = 'a array array [@@deriving sexp_of]
+
+    let rows t = Array.length t
+    let cols t = Array.length t.(0)
+
+    module Iterator = struct
+      module Dimension = struct
+        type t =
+          { current : int
+          ; reset : int
+          ; stop_condition : int
+          ; direction : int
+          }
+
+        let next t =
+          let next = t.current + t.direction in
+          if next = t.stop_condition
+          then `Reset { t with current = t.reset }
+          else `Run { t with current = next }
+        ;;
+      end
+
+      type ('r, 'c) t =
+        | Base : (Nothing.t, Nothing.t) t
+        | Row : Dimension.t * (Nothing.t, 'c) t -> (int, 'c) t
+        | Column : Dimension.t * ('r, Nothing.t) t -> ('r, int) t
+
+      let compute outer inner =
+        match Dimension.next inner with
+        | `Run inner -> outer, inner, `Take
+        | `Reset inner ->
+          (match Dimension.next outer with
+          | `Run outer -> outer, inner, `Reset
+          | `Reset outer -> outer, inner, `Stop)
+      ;;
+
+      let next = function
+        | Row (row, Column (column, Base)) ->
+          let yield = row.current, column.current in
+          let row, column, action = compute row column in
+          Row (row, Column (column, Base)), yield, action
+        | Column (column, Row (row, Base)) ->
+          let yield = row.current, column.current in
+          let column, row, action = compute column row in
+          Column (column, Row (row, Base)), yield, action
+      ;;
+    end
+
+    let fold_map_1d_iterator ~temp (input : Input.t) iterator ~init ~f =
+      let t = Array.map input ~f:(Array.map ~f:(const temp)) in
+      let rec go iterator ~acc =
+        let iterator, (r, c), action = Iterator.next iterator in
+        let acc, value = f acc input.(r).(c) in
+        t.(r).(c) <- value;
+        match action with
+        | `Take -> go iterator ~acc
+        | `Reset -> go iterator ~acc:init
+        | `Stop -> ()
+      in
+      go iterator ~acc:init;
+      t
+    ;;
+
+    let compute_visibility input iterator =
+      fold_map_1d_iterator
+        input
+        iterator
+        ~temp:false
+        ~init:(-1)
+        ~f:(fun current_height tree_height ->
+          Int.max current_height tree_height, current_height < tree_height)
+    ;;
+
+    let compute_viewing_distance input iterator =
+      fold_map_1d_iterator
+        ~temp:0
+        input
+        iterator
+        ~init:[]
+        ~f:(fun heights_and_count tree_height ->
+          let rec compute smaller_tree_count = function
+            | [] -> [ tree_height, 1 + smaller_tree_count ], smaller_tree_count
+            | (height, existing_count) :: rest as all ->
+              if tree_height < height
+              then
+                (tree_height, 1 + smaller_tree_count) :: all, smaller_tree_count + 1
+                (* Self + blocking tree + smaller trees *)
+              else if tree_height = height
+              then
+                ( (height, existing_count + smaller_tree_count + 1) :: rest
+                , smaller_tree_count + 1 )
+              else compute (existing_count + smaller_tree_count) rest
+          in
+          compute 0 heights_and_count)
+    ;;
+
+    let forward ~f t =
+      { Iterator.Dimension.current = 0; reset = 0; stop_condition = f t; direction = 1 }
+    ;;
+
+    let backward ~f t =
+      let reset = f t - 1 in
+      { Iterator.Dimension.current = reset; reset; stop_condition = -1; direction = -1 }
+    ;;
+
+    let top_down t = Iterator.Column (forward ~f:cols t, Row (forward ~f:rows t, Base))
+    let bottom_up t = Iterator.Column (forward ~f:cols t, Row (backward ~f:rows t, Base))
+    let left_right t = Iterator.Row (forward ~f:rows t, Column (forward ~f:cols t, Base))
+    let right_left t = Iterator.Row (forward ~f:rows t, Column (backward ~f:cols t, Base))
+    let ( ||* ) = Array.map2_exn ~f:(Array.map2_exn ~f:( || ))
+    let ( *. ) = Array.map2_exn ~f:(Array.map2_exn ~f:( * ))
+    let count = Array.sum (module Int) ~f:(Array.count ~f:Fn.id)
+
+    let max t =
+      Array.map t ~f:(fun a -> Array.max_elt ~compare a |> Option.value_exn)
+      |> Array.max_elt ~compare
+      |> Option.value_exn
+    ;;
+  end
+
+  module Part_1 = struct
+    include Int_result
+
+    let run input =
+      Visibility_map.[ top_down; bottom_up; left_right; right_left ]
+      |> List.map ~f:(fun iterator ->
+             Visibility_map.compute_visibility input (iterator input))
+      |> List.reduce_exn ~f:Visibility_map.( ||* )
+      |> Visibility_map.count
+    ;;
+  end
+
+  module Part_2 = struct
+    include Int_result
+
+    let run input =
+      Visibility_map.[ top_down; bottom_up; left_right; right_left ]
+      |> List.map ~f:(fun iterator ->
+             Visibility_map.compute_viewing_distance input (iterator input))
+      |> List.reduce_exn ~f:Visibility_map.( *. )
+      |> Visibility_map.max
+    ;;
+  end
+end
+
+let () = Framework.register ~day:8 (module Day_8)
 let link () = ()
