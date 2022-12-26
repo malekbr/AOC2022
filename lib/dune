@@ -1,0 +1,6 @@
+(library
+ (name aoc2022)
+ (libraries async core angstrom)
+ (inline_tests)
+ (preprocess
+  (pps ppx_jane)))
