@@ -348,4 +348,193 @@ module Day_6 = struct
 end
 
 let () = Framework.register ~day:6 (module Day_6)
+
+module Day_7 = struct
+  module Input = struct
+    module Cd = struct
+      type t =
+        | Root
+        | Dir of string
+        | Parent
+      [@@deriving sexp_of]
+    end
+
+    module Ls = struct
+      type t =
+        | Dir of string
+        | File of
+            { size : int
+            ; name : string
+            }
+      [@@deriving sexp_of]
+    end
+
+    module Command = struct
+      type t =
+        | Cd of Cd.t
+        | Ls of Ls.t list
+      [@@deriving sexp_of]
+    end
+
+    type t = Command.t list [@@deriving sexp_of]
+
+    module Parse = struct
+      open! Angstrom
+
+      let root = char '/'
+      let parent = string ".."
+      let file = take_while1 (Fn.non Char.is_whitespace)
+
+      let cd =
+        let%map.Angstrom cd =
+          string "$ cd "
+          *> choice
+               [ root *> return Cd.Root
+               ; parent *> return Cd.Parent
+               ; map file ~f:(fun dir -> Cd.Dir dir)
+               ]
+        in
+        Command.Cd cd
+      ;;
+
+      let ls_dir = string "dir " *> file |> map ~f:(fun file -> Ls.Dir file)
+
+      let ls_file =
+        let%mapn.Angstrom size =
+          map ~f:Int.of_string (take_while1 Char.is_alphanum) <* char ' '
+        and name = file in
+        Ls.File { size; name }
+      ;;
+
+      let ls =
+        string "$ ls" *> many (end_of_line *> (ls_dir <|> ls_file))
+        |> map ~f:(fun ls -> Command.Ls ls)
+      ;;
+
+      let parser = many (cd <|> ls <* end_of_line)
+      let parse s = Angstrom.parse_string ~consume:All parser s |> Result.ok_or_failwith
+    end
+
+    let load in_channel = In_channel.input_all in_channel |> Parse.parse
+  end
+
+  module Structure = struct
+    type 'a t =
+      | Dir of
+          { files : 'a t String.Map.t
+          ; data : 'a
+          }
+      | File of { size : int }
+    [@@deriving sexp_of]
+
+    let go_parent parent_trail pwd =
+      match parent_trail with
+      | [] -> None
+      | (name, parent) :: rest ->
+        let pwd = Map.set parent ~key:name ~data:(Dir { files = pwd; data = () }) in
+        Some (rest, pwd)
+    ;;
+
+    let rec go_to_root parent_trail pwd =
+      match go_parent parent_trail pwd with
+      | None -> pwd
+      | Some (trail, pwd) -> go_to_root trail pwd
+    ;;
+
+    let rec build parent_trail pwd = function
+      | [] -> go_to_root parent_trail pwd
+      | Input.Command.Cd cd :: rest ->
+        (match cd with
+        | Root ->
+          let root = go_to_root parent_trail pwd in
+          build [] root rest
+        | Parent ->
+          let trail, pwd = go_parent parent_trail pwd |> Option.value_exn in
+          build trail pwd rest
+        | Dir dir_name ->
+          let dir_content =
+            match Map.find_exn pwd dir_name with
+            | Dir { files; data = () } -> files
+            | File _ -> raise_s [%message "Is file" (dir_name : string)]
+          in
+          build ((dir_name, pwd) :: parent_trail) dir_content rest)
+      | Input.Command.Ls ls :: rest ->
+        if Map.is_empty pwd
+        then (
+          let pwd =
+            List.map ls ~f:(function
+                | File { size; name } -> name, File { size }
+                | Dir name -> name, Dir { files = String.Map.empty; data = () })
+            |> String.Map.of_alist_exn
+          in
+          build parent_trail pwd rest)
+        else (* We already visited here before *) build parent_trail pwd rest
+    ;;
+
+    let build commands = Dir { files = build [] String.Map.empty commands; data = () }
+
+    let rec bind t ~f =
+      match t with
+      | File { size } -> File { size }
+      | Dir { files; data } -> f ~files:(Map.map files ~f:(bind ~f)) ~data
+    ;;
+
+    let total_size t =
+      bind t ~f:(fun ~files ~data:() ->
+          let data =
+            Map.data files
+            |> List.sum
+                 (module Int)
+                 ~f:(fun (File { size } | Dir { files = _; data = size }) -> size)
+          in
+          Dir { files; data })
+    ;;
+
+    let rec fold_dir t ~init ~f =
+      match t with
+      | Dir { files; data } ->
+        Map.fold files ~init:(f init data) ~f:(fun ~key:_ ~data init ->
+            fold_dir data ~init ~f)
+      | File _ -> init
+    ;;
+  end
+
+  module Part_1 = struct
+    include Int_result
+
+    let run commands =
+      Structure.build commands
+      |> Structure.total_size
+      |> Structure.fold_dir ~init:0 ~f:(fun total size ->
+             if size <= 100_000 then size + total else total)
+    ;;
+  end
+
+  module Part_2 = struct
+    include Int_result
+
+    let run commands =
+      let system_size = 70000000 in
+      let required_free = 30000000 in
+      let data = Structure.build commands |> Structure.total_size in
+      let current_used =
+        match data with
+        | Dir { data; _ } -> data
+        | File _ -> assert false
+      in
+      let current_free = system_size - current_used in
+      let needed_delete = required_free - current_free in
+      Structure.fold_dir data ~init:None ~f:(fun size_to_delete size ->
+          if size >= needed_delete
+          then (
+            match size_to_delete with
+            | None -> Some size
+            | Some existing -> Some (Int.min size existing))
+          else size_to_delete)
+      |> Option.value_exn
+    ;;
+  end
+end
+
+let () = Framework.register ~day:7 (module Day_7)
 let link () = ()
