@@ -896,7 +896,8 @@ module Day_10 = struct
       test 16 4;
       test 5 5;
       test 8 10;
-      [%expect {|
+      [%expect
+        {|
         true
         true
         false
@@ -919,4 +920,176 @@ module Day_10 = struct
 end
 
 let () = Framework.register ~day:10 (module Day_10)
+
+module Day_11 = struct
+  module Operand = struct
+    type t =
+      | Old
+      | Value of int
+  end
+
+  module Operation = struct
+    type t =
+      | Add
+      | Mul
+  end
+
+  module Expr = struct
+    type t = Operation.t * Operand.t * Operand.t
+
+    let evaluate (operation, left, right) ~old =
+      let value = function
+        | Operand.Old -> old
+        | Value v -> v
+      in
+      let operation =
+        match operation with
+        | Operation.Add -> ( + )
+        | Mul -> ( * )
+      in
+      operation (value left) (value right)
+    ;;
+  end
+
+  module Monkey = struct
+    type 'a t =
+      { index : int
+      ; items : 'a Queue.t
+      ; operation : Expr.t
+      ; divisible_by : int
+      ; true_monkey : int
+      ; false_monkey : int
+      }
+
+    let map t ~f = { t with items = Queue.map t.items ~f }
+  end
+
+  module Input = struct
+    type t = int Monkey.t list
+
+    module Parse = struct
+      open! Angstrom
+
+      let number = take_while1 Char.is_digit |> lift Int.of_string
+
+      let operand =
+        lift (fun v -> Operand.Value v) number <|> string "old" *> return Operand.Old
+      ;;
+
+      let operation =
+        char '+' *> return Operation.Add <|> char '*' *> return Operation.Mul
+      ;;
+
+      let expr =
+        let%mapn.Angstrom left = operand
+        and operation = char ' ' *> operation <* char ' '
+        and right = operand in
+        operation, left, right
+      ;;
+
+      let monkey =
+        let%map.Angstrom index = string "Monkey " *> number <* char ':' <* end_of_line
+        and items =
+          string "  Starting items: " *> sep_by1 (string ", ") number <* end_of_line
+        and operation = string "  Operation: new = " *> expr <* end_of_line
+        and divisible_by = string "  Test: divisible by " *> number <* end_of_line
+        and true_monkey = string "    If true: throw to monkey " *> number <* end_of_line
+        and false_monkey =
+          string "    If false: throw to monkey " *> number <* end_of_line
+        in
+        { Monkey.index
+        ; items = Queue.of_list items
+        ; operation
+        ; divisible_by
+        ; true_monkey
+        ; false_monkey
+        }
+      ;;
+
+      let parser = sep_by1 end_of_line monkey
+      let parse s = Angstrom.parse_string ~consume:All parser s |> Result.ok_or_failwith
+    end
+
+    let load in_channel = In_channel.input_all in_channel |> Parse.parse
+  end
+
+  module type S = sig
+    type t
+
+    val map : t -> f:(int -> int) -> t
+    val evaluate : t -> int -> bool
+  end
+
+  let evaluate_monkey (type a) (module M : S with type t = a) (monkey : a Monkey.t) =
+    let items = Queue.to_list monkey.items in
+    Queue.clear monkey.items;
+    List.map items ~f:(fun item ->
+        let new_item = M.map item ~f:(fun old -> Expr.evaluate monkey.operation ~old) in
+        let next_monkey =
+          if M.evaluate new_item monkey.divisible_by
+          then monkey.true_monkey
+          else monkey.false_monkey
+        in
+        new_item, next_monkey)
+  ;;
+
+  let evaluate_monkeys field monkey_array count_array =
+    Array.iteri monkey_array ~f:(fun i monkey ->
+        let new_items = evaluate_monkey field monkey in
+        count_array.(i) <- count_array.(i) + List.length new_items;
+        List.iter new_items ~f:(fun (item, monkey) ->
+            Queue.enqueue monkey_array.(monkey).items item))
+  ;;
+
+  module Part_1 = struct
+    include Int_result
+
+    module Field = struct
+      type t = int
+
+      let map t ~f = f t / 3
+      let evaluate t n = t % n = 0
+    end
+
+    let run monkeys =
+      let monkeys = Array.of_list monkeys in
+      let counts = Array.map monkeys ~f:(const 0) in
+      for _ = 1 to 20 do
+        evaluate_monkeys (module Field) monkeys counts
+      done;
+      Array.sort counts ~compare:Int.descending;
+      counts.(0) * counts.(1)
+    ;;
+  end
+
+  module Part_2 = struct
+    include Int_result
+
+    module Field = struct
+      type t = int Int.Map.t
+
+      let make monkeys value =
+        List.map monkeys ~f:(fun monkey ->
+            let d = monkey.Monkey.divisible_by in
+            d, value % d)
+        |> Int.Map.of_alist_reduce ~f:(fun a _ -> a)
+      ;;
+
+      let map t ~f = Map.mapi t ~f:(fun ~key ~data -> f data % key)
+      let evaluate t n = Map.find_exn t n = 0
+    end
+
+    let run monkeys =
+      let monkeys = Array.of_list_map monkeys ~f:(Monkey.map ~f:(Field.make monkeys)) in
+      let counts = Array.map monkeys ~f:(const 0) in
+      for _ = 1 to 10_000 do
+        evaluate_monkeys (module Field) monkeys counts
+      done;
+      Array.sort counts ~compare:Int.descending;
+      counts.(0) * counts.(1)
+    ;;
+  end
+end
+
+let () = Framework.register ~day:11 (module Day_11)
 let link () = ()
