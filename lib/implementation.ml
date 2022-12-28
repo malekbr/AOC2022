@@ -1092,4 +1092,195 @@ module Day_11 = struct
 end
 
 let () = Framework.register ~day:11 (module Day_11)
+
+module Day_12 = struct
+  module Pos = struct
+    module T = struct
+      type t = int * int [@@deriving sexp_of, compare]
+    end
+
+    include T
+    include Comparable.Make_plain (T)
+  end
+
+  module Input = struct
+    type t =
+      { elevations : int array array
+      ; start : Pos.t
+      ; goal : Pos.t
+      }
+    [@@deriving sexp_of]
+
+    let load in_channel =
+      let (start, goal), elevations =
+        In_channel.input_lines in_channel
+        |> Array.of_list
+        |> Array.fold_mapi
+             ~init:((0, 0), (0, 0))
+             ~f:(fun r init s ->
+               Array.fold_mapi ~init (String.to_array s) ~f:(fun c (start, goal) ->
+                 function
+                 | 'S' -> ((r, c), goal), 0
+                 | 'E' -> (start, (r, c)), 25
+                 | c -> (start, goal), Char.to_int c - Char.to_int 'a'))
+      in
+      { start; goal; elevations }
+    ;;
+  end
+
+  let neighbors elevations (r, c) ~valid_neighbor =
+    let value = elevations.(r).(c) in
+    let check_neighbor (r, c) =
+      match valid_neighbor ~to_:elevations.(r).(c) ~from:value with
+      | true -> Some (r, c)
+      | false | (exception _) -> None
+    in
+    List.filter_map [ r + 1, c; r - 1, c; r, c + 1; r, c - 1 ] ~f:check_neighbor
+  ;;
+
+  let search ~goal_reached ~valid_neighbor elevations start =
+    let queue = Queue.create () in
+    let explored = Pos.Set.singleton start in
+    Queue.enqueue queue [ start ];
+    let rec loop explored =
+      match Queue.dequeue queue with
+      | None ->
+        Array.iteri elevations ~f:(fun r line ->
+            Array.iteri line ~f:(fun c _ ->
+                if Set.mem explored (r, c)
+                then
+                  Out_channel.output_char
+                    stdout
+                    (Char.of_int_exn (elevations.(r).(c) + Char.to_int 'a'))
+                else Out_channel.output_char stdout ' ');
+            Out_channel.newline stdout);
+        raise_s [%message "No path found"]
+      | Some path ->
+        let pos = List.hd_exn path in
+        if goal_reached pos
+        then path
+        else
+          neighbors elevations pos ~valid_neighbor
+          |> List.fold ~init:explored ~f:(fun explored pos ->
+                 if Set.mem explored pos
+                 then explored
+                 else (
+                   Queue.enqueue queue (pos :: path);
+                   Set.add explored pos))
+          |> loop
+    in
+    loop explored
+  ;;
+
+  module Part_1 = struct
+    include Int_result
+
+    let run { Input.elevations; start; goal } =
+      (search
+         elevations
+         start
+         ~goal_reached:([%compare.equal: Pos.t] goal)
+         ~valid_neighbor:(fun ~to_ ~from -> to_ <= from + 1)
+      |> List.length)
+      - 1
+    ;;
+  end
+
+  module Part_2 = struct
+    include Int_result
+
+    let run { Input.elevations; start = _; goal } =
+      let path =
+        search
+          elevations
+          goal
+          ~goal_reached:(fun (r, c) -> elevations.(r).(c) = 0)
+          ~valid_neighbor:(fun ~to_ ~from -> from <= to_ + 1)
+      in
+      List.length path - 1
+    ;;
+  end
+end
+
+let () = Framework.register ~day:12 (module Day_12)
+
+module Day_13 = struct
+  module Packet = struct
+    type t =
+      | List of t list
+      | Value of int
+    [@@deriving equal]
+
+    let lower_divider = List [ List [ Value 2 ] ]
+    let upper_divider = List [ List [ Value 6 ] ]
+
+    let rec to_string = function
+      | Value int -> Int.to_string int
+      | List l -> List.map l ~f:to_string |> String.concat ~sep:"," |> sprintf "[%s]"
+    ;;
+  end
+
+  module Input = struct
+    type t = (Packet.t * Packet.t) list
+
+    module Parse = struct
+      open! Angstrom
+
+      let number = take_while1 Char.is_digit |> map ~f:Int.of_string
+
+      let packet =
+        fix (fun packet ->
+            choice
+              [ char '[' *> sep_by (char ',') packet
+                <* char ']'
+                |> lift (fun packet -> Packet.List packet)
+              ; lift (fun number -> Packet.Value number) number
+              ])
+      ;;
+
+      let pair = both (packet <* end_of_line) (packet <* end_of_line)
+      let parser = sep_by end_of_line pair
+      let parse s = Angstrom.parse_string ~consume:All parser s |> Result.ok_or_failwith
+    end
+
+    let load in_channel = In_channel.input_all in_channel |> Parse.parse
+  end
+
+  let rec packet_compare packet_1 packet_2 =
+    match packet_1, packet_2 with
+    | Packet.Value x, Packet.Value y -> compare x y
+    | List x, List y -> List.compare packet_compare x y
+    | Value x, List y -> List.compare packet_compare [ Value x ] y
+    | List x, Value y -> List.compare packet_compare x [ Value y ]
+  ;;
+
+  module Part_1 = struct
+    include Int_result
+
+    let run input =
+      List.filter_mapi input ~f:(fun i (packet_1, packet_2) ->
+          if packet_compare packet_1 packet_2 > 0 then None else Some (i + 1))
+      |> List.sum (module Int) ~f:Fn.id
+    ;;
+  end
+
+  module Part_2 = struct
+    include Int_result
+
+    let run input =
+      List.concat_map
+        ((Packet.lower_divider, Packet.upper_divider) :: input)
+        ~f:(fun (packet_1, packet_2) -> [ packet_1; packet_2 ])
+      |> List.sort ~compare:packet_compare
+      |> List.filter_mapi ~f:(fun i packet ->
+             if Packet.equal packet Packet.lower_divider
+                || Packet.equal packet Packet.upper_divider
+             then Some (i + 1)
+             else None)
+      |> List.fold ~init:1 ~f:( * )
+    ;;
+  end
+end
+
+let () = Framework.register ~day:13 (module Day_13)
 let link () = ()
