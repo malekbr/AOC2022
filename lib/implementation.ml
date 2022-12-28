@@ -697,4 +697,194 @@ module Day_8 = struct
 end
 
 let () = Framework.register ~day:8 (module Day_8)
+
+module Day_9 = struct
+  module Dir = struct
+    type t =
+      | Right
+      | Up
+      | Left
+      | Down
+
+    let of_char = function
+      | 'R' -> Right
+      | 'U' -> Up
+      | 'L' -> Left
+      | 'D' -> Down
+      | c -> raise_s [%message "Bad character" (c : char)]
+    ;;
+  end
+
+  module Input = struct
+    type t = (Dir.t * int) list
+
+    let load in_channel =
+      In_channel.input_lines in_channel
+      |> List.map ~f:(fun s ->
+             Scanf.sscanf s "%c %d" (fun dir count -> Dir.of_char dir, count))
+    ;;
+  end
+
+  module Simulation = struct
+    module Pos = struct
+      module T = struct
+        type t = int * int [@@deriving sexp_of, compare]
+      end
+
+      include T
+      include Comparable.Make_plain (T)
+    end
+
+    type t =
+      { rope : Pos.t list
+      ; visited_tail : Pos.Set.t
+      }
+
+    let init n =
+      let pos = 0, 0 in
+      { rope = List.init n ~f:(const pos); visited_tail = Pos.Set.singleton pos }
+    ;;
+
+    let move_head (r, c) direction =
+      match direction with
+      | Dir.Right -> r, c + 1
+      | Left -> r, c - 1
+      | Up -> r - 1, c
+      | Down -> r + 1, c
+    ;;
+
+    let adjust_tail ~head:(rh, ch) ~tail:(rt, ct) =
+      let classify = function
+        | (-1 | 1) as n -> `Adjacent n
+        | 0 -> `Same 0
+        | n -> if n < 0 then `Far (-1) else `Far 1
+      in
+      let dr, dc =
+        match classify (rh - rt), classify (ch - ct) with
+        | (`Adjacent _ | `Same _), (`Adjacent _ | `Same _) -> 0, 0
+        | `Far r, `Same c
+        | `Same r, `Far c
+        | `Far r, `Far c
+        | `Adjacent r, `Far c
+        | `Far r, `Adjacent c -> r, c
+      in
+      rt + dr, ct + dc
+    ;;
+
+    let adjust_rope rope direction =
+      let head, rest =
+        match rope with
+        | head :: rest -> head, rest
+        | _ -> raise_s [%message "Rope needs to have at least one element"]
+      in
+      let rec go ~acc = function
+        | [] -> List.rev acc, List.hd_exn acc
+        | knot :: rest ->
+          go ~acc:(adjust_tail ~head:(List.hd_exn acc) ~tail:knot :: acc) rest
+      in
+      go ~acc:[ move_head head direction ] rest
+    ;;
+
+    let rec simulate t (direction, count) =
+      if count <= 0
+      then t
+      else (
+        let rope, tail = adjust_rope t.rope direction in
+        let visited_tail = Set.add t.visited_tail tail in
+        simulate { rope; visited_tail } (direction, count - 1))
+    ;;
+  end
+
+  module Part_1 = struct
+    include Int_result
+
+    let run input =
+      let simulation = List.fold input ~init:(Simulation.init 2) ~f:Simulation.simulate in
+      Set.length simulation.visited_tail
+    ;;
+  end
+
+  module Part_2 = struct
+    include Int_result
+
+    let run input =
+      let simulation =
+        List.fold input ~init:(Simulation.init 10) ~f:Simulation.simulate
+      in
+      Set.length simulation.visited_tail
+    ;;
+  end
+end
+
+let () = Framework.register ~day:9 (module Day_9)
+
+module Day_10 = struct
+  module Instruction = struct
+    type t =
+      | Noop
+      | Addx of int
+  end
+
+  module Input = struct
+    type t = Instruction.t list
+
+    module Parse = struct
+      open! Angstrom
+
+      let noop = string "noop" *> return Instruction.Noop
+
+      let addx =
+        let%map.Angstrom v =
+          string "addx " *> consumed (option '+' (char '-') *> take_while1 Char.is_digit)
+        in
+        Instruction.Addx (Int.of_string v)
+      ;;
+
+      let parser = many (noop <|> addx <* end_of_line)
+      let parse s = Angstrom.parse_string ~consume:All parser s |> Result.ok_or_failwith
+    end
+
+    let load in_channel = In_channel.input_all in_channel |> Parse.parse
+  end
+
+  module Simulation = struct
+    type t =
+      { cycle : int
+      ; x : int
+      }
+
+    let run t instruction =
+      match instruction with
+      | Instruction.Noop -> [ t ]
+      | Instruction.Addx n -> [ t; t + n ]
+    ;;
+
+    let start = { cycle = 1; x = 1 }
+
+    let fold_run instructions ~init ~f =
+      List.fold
+        instructions
+        ~init:(start, f init start)
+        ~f:(fun (t, init) instruction ->
+          run t.x instruction
+          |> List.fold ~init:(t, init) ~f:(fun (t, init) x ->
+                 let t = { x; cycle = t.cycle + 1 } in
+                 t, f init t))
+    ;;
+  end
+
+  module Part_1 = struct
+    include Int_result
+
+    let run instructions =
+      Simulation.fold_run instructions ~init:0 ~f:(fun count state ->
+          if state.cycle mod 40 = 20 then (state.x * state.cycle) + count else count)
+      |> snd
+    ;;
+  end
+
+  module Part_2 = Framework.Unimplemented
+end
+
+let () = Framework.register ~day:10 (module Day_10)
 let link () = ()
