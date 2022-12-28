@@ -883,7 +883,39 @@ module Day_10 = struct
     ;;
   end
 
-  module Part_2 = Framework.Unimplemented
+  module Part_2 = struct
+    type t = string list
+
+    let sprite_set x cycle = (cycle - x) % 40 < 3
+
+    let%expect_test _ =
+      let test x cycle = print_s [%sexp (sprite_set x cycle : bool)] in
+      test 1 1;
+      test 1 2;
+      test 16 3;
+      test 16 4;
+      test 5 5;
+      test 8 10;
+      [%expect {|
+        true
+        true
+        false
+        false
+        true
+        true |}]
+    ;;
+
+    let run instructions =
+      Simulation.fold_run instructions ~init:[] ~f:(fun output state ->
+          if sprite_set state.x state.cycle then '#' :: output else '.' :: output)
+      |> snd
+      |> List.rev
+      |> List.groupi ~break:(fun i _ _ -> i mod 40 = 0)
+      |> List.map ~f:String.of_char_list
+    ;;
+
+    let show output = List.iter output ~f:print_endline
+  end
 end
 
 let () = Framework.register ~day:10 (module Day_10)
