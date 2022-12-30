@@ -1283,4 +1283,116 @@ module Day_13 = struct
 end
 
 let () = Framework.register ~day:13 (module Day_13)
+
+module Day_14 = struct
+  module Pos = struct
+    module T = struct
+      type t = int * int [@@deriving sexp_of, compare]
+    end
+
+    include T
+    include Comparable.Make_plain (T)
+
+    let ( - ) (a, b) (c, d) = a - c, b - d
+    let ( + ) (a, b) (c, d) = a + c, b + d
+
+    let normalize (a, b) =
+      let open Int.O in
+      let normalize n = if n > 0 then 1 else if n = 0 then 0 else -1 in
+      normalize a, normalize b
+    ;;
+  end
+
+  module Input = struct
+    type t = Pos.t list list
+
+    module Parse = struct
+      open! Angstrom
+
+      let number = take_while1 Char.is_digit |> map ~f:Int.of_string
+      let pair : Pos.t t = both (number <* char ',') number
+      let line = sep_by1 (string " -> ") pair
+      let parser = many (line <* end_of_line)
+      let parse s = Angstrom.parse_string ~consume:All parser s |> Result.ok_or_failwith
+    end
+
+    let load in_channel = In_channel.input_all in_channel |> Parse.parse
+  end
+
+  let rec fold_positions ~from ~to_ ~init ~f =
+    let init = f init from in
+    if [%compare.equal: Pos.t] from to_
+    then init
+    else fold_positions ~from:Pos.(normalize (to_ - from) + from) ~to_ ~init ~f
+  ;;
+
+  let rec fold_line ~init ~f = function
+    | [ _ ] | [] -> init
+    | from :: (to_ :: _ as rest) ->
+      let init = fold_positions ~from ~to_ ~init ~f in
+      fold_line ~init ~f rest
+  ;;
+
+  let fold_input (input : Input.t) ~init ~f =
+    List.fold input ~init ~f:(fun init line -> fold_line ~init ~f line)
+  ;;
+
+  let build input = fold_input input ~init:Pos.Set.empty ~f:Set.add
+  let lowest_point = Set.fold ~init:0 ~f:(fun v (_, y) -> max v y)
+
+  let rec drop_ball_part_1 ~lowest_point set pos =
+    if snd pos > lowest_point
+    then `Full
+    else (
+      match
+        List.find
+          Pos.[ pos + (0, 1); pos + (-1, 1); pos + (1, 1) ]
+          ~f:(fun pos -> not (Set.mem set pos))
+      with
+      | None -> `Stable (Set.add set pos)
+      | Some pos -> drop_ball_part_1 ~lowest_point set pos)
+  ;;
+
+  let rec drop_ball_part_2 ~lowest_point set pos =
+    match
+      List.find
+        Pos.[ pos + (0, 1); pos + (-1, 1); pos + (1, 1) ]
+        ~f:(fun pos -> not (Set.mem set pos || snd pos = lowest_point + 2))
+    with
+    | None -> `Stable (Set.add set pos)
+    | Some pos -> drop_ball_part_2 ~lowest_point set pos
+  ;;
+
+  let drop_ball ~f ~lowest_point set pos =
+    if Set.mem set pos then `Full else f ~lowest_point set pos
+  ;;
+
+  let rec simulate ~count ~lowest_point ~f set =
+    match drop_ball ~lowest_point set (500, 0) ~f with
+    | `Full -> count
+    | `Stable set -> simulate ~count:(count + 1) ~lowest_point set ~f
+  ;;
+
+  module Part_1 = struct
+    include Int_result
+
+    let run input =
+      let grid = build input in
+      let lowest_point = lowest_point grid in
+      simulate ~count:0 ~lowest_point grid ~f:drop_ball_part_1
+    ;;
+  end
+
+  module Part_2 = struct
+    include Int_result
+
+    let run input =
+      let grid = build input in
+      let lowest_point = lowest_point grid in
+      simulate ~count:0 ~lowest_point grid ~f:drop_ball_part_2
+    ;;
+  end
+end
+
+let () = Framework.register ~day:14 (module Day_14)
 let link () = ()
