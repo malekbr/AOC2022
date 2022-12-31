@@ -1395,4 +1395,127 @@ module Day_14 = struct
 end
 
 let () = Framework.register ~day:14 (module Day_14)
+
+module Day_15 = struct
+  module Pos = struct
+    module T = struct
+      type t = int * int [@@deriving sexp_of, compare]
+    end
+
+    include T
+    include Comparable.Make_plain (T)
+
+    let ( - ) (a, b) (c, d) = a - c, b - d
+    let manhattan_norm (a, b) = Int.abs a + Int.abs b
+  end
+
+  module Report = struct
+    type t =
+      { sensor : Pos.t
+      ; beacon : Pos.t
+      }
+    [@@deriving sexp_of, compare]
+  end
+
+  module Input = struct
+    type t = Report.t list
+
+    let load in_channel =
+      In_channel.input_lines in_channel
+      |> List.map ~f:(fun s ->
+             Scanf.sscanf
+               s
+               "Sensor at x=%d, y=%d: closest beacon is at x=%d, y=%d"
+               (fun sx sy bx by -> { Report.sensor = sx, sy; beacon = bx, by }))
+    ;;
+  end
+
+  let number_of_beacons_on_line reports ~line =
+    List.filter_map reports ~f:(fun (report : Report.t) ->
+        if snd report.beacon = line then Some report.beacon else None)
+    |> Pos.Set.of_list
+    |> Set.length
+  ;;
+
+  let range_covered_by_sensor (report : Report.t) ~line =
+    let x, _ = report.sensor in
+    let projection = x, line in
+    let distance = Pos.(manhattan_norm (projection - report.sensor)) in
+    let beacon_distance = Pos.(manhattan_norm (report.beacon - report.sensor)) in
+    let slack = beacon_distance - distance in
+    if slack < 0 then None else Some (x - slack, x + slack)
+  ;;
+
+  let ranges_covered_by_sensors_rev reports ~line =
+    List.filter_map reports ~f:(range_covered_by_sensor ~line)
+    |> List.sort ~compare:Pos.compare
+    |> List.fold ~init:[] ~f:(fun ranges ((new_lo, new_hi) as new_) ->
+           assert (new_lo <= new_hi);
+           match ranges with
+           | [] -> [ new_ ]
+           | (old_lo, old_hi) :: rest ->
+             assert (old_lo <= new_lo);
+             if old_hi >= new_lo
+             then (old_lo, Int.max new_hi old_hi) :: rest
+             else new_ :: ranges)
+  ;;
+
+  let count_clear reports ~line =
+    let beacon_count = number_of_beacons_on_line reports ~line in
+    let total_ranges =
+      ranges_covered_by_sensors_rev reports ~line
+      |> List.sum (module Int) ~f:(fun (lo, hi) -> hi - lo + 1)
+    in
+    total_ranges - beacon_count
+  ;;
+
+  let beacon_line_scan reports ~lo_limit ~hi_limit =
+    let line_scan =
+      let%bind.Sequence line =
+        Sequence.range ~start:`inclusive ~stop:`inclusive lo_limit hi_limit
+      in
+      let ranges = ranges_covered_by_sensors_rev reports ~line |> List.rev in
+      match
+        List.fold_until
+          ranges
+          ~init:(lo_limit, hi_limit)
+          ~f:(fun (lo_limit, hi_limit) (lo, hi) ->
+            if lo_limit < lo
+            then Stop (Some lo_limit)
+            else if hi >= hi_limit
+            then Stop None
+            else Continue (hi + 1, hi_limit))
+          ~finish:(fun (lo_limit, _) -> Some lo_limit)
+      with
+      | None -> Sequence.empty
+      | Some x -> Sequence.return (x, line)
+    in
+    match Sequence.to_list line_scan with
+    | [ pos ] -> pos
+    | positions -> raise_s [%message "Many positions found" (positions : Pos.t list)]
+  ;;
+
+  module Part_1 = struct
+    include Int_result
+
+    let run = count_clear ~line:2000000
+  end
+
+  module Part_2 = struct
+    include Int_result
+
+    let run input =
+      (* The small input has a smaller limit *)
+      let hi_limit =
+        match Sys.getenv "HI_LIMIT" with
+        | None -> 4000000
+        | Some limit -> Int.of_string limit
+      in
+      let x, y = beacon_line_scan input ~lo_limit:0 ~hi_limit in
+      (x * 4000000) + y
+    ;;
+  end
+end
+
+let () = Framework.register ~day:15 (module Day_15)
 let link () = ()
