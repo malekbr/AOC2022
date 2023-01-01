@@ -2164,4 +2164,232 @@ module Day_18 = struct
 end
 
 let () = Framework.register ~day:18 (module Day_18)
+
+module Day_19 = struct
+  module Cost = struct
+    type t =
+      { ore : int
+      ; clay : int
+      ; obsidian : int
+      }
+    [@@deriving sexp_of, compare, hash, fields]
+
+    let create ?(ore = 0) ?(clay = 0) ?(obsidian = 0) () = { ore; clay; obsidian }
+    let zero = create ()
+
+    module O = struct
+      let ( >=$ ) a b = a.ore >= b.ore && a.clay >= b.clay && a.obsidian >= b.obsidian
+
+      let ( -$ ) a b =
+        { ore = a.ore - b.ore
+        ; clay = a.clay - b.clay
+        ; obsidian = a.obsidian - b.obsidian
+        }
+      ;;
+
+      let ( +$ ) a b =
+        { ore = a.ore + b.ore
+        ; clay = a.clay + b.clay
+        ; obsidian = a.obsidian + b.obsidian
+        }
+      ;;
+    end
+
+    include O
+  end
+
+  module Blueprint = struct
+    type t =
+      { index : int
+      ; ore_robot : Cost.t
+      ; clay_robot : Cost.t
+      ; obsidian_robot : Cost.t
+      ; geode_robot : Cost.t
+      }
+    [@@deriving sexp_of, compare, hash]
+  end
+
+  module Input = struct
+    type t = Blueprint.t list
+
+    let load in_channel =
+      In_channel.input_lines in_channel
+      |> List.map ~f:(fun s ->
+             Scanf.sscanf
+               s
+               "Blueprint %d: Each ore robot costs %d ore. Each clay robot costs %d ore. \
+                Each obsidian robot costs %d ore and %d clay. Each geode robot costs %d \
+                ore and %d obsidian."
+               (fun
+                 index
+                 ore_robot_ore
+                 clay_robot_ore
+                 obsidian_robot_ore
+                 obsidian_robot_clay
+                 geode_robot_ore
+                 geode_robot_obsidian
+               ->
+                 { Blueprint.index
+                 ; ore_robot = Cost.create ~ore:ore_robot_ore ()
+                 ; clay_robot = Cost.create ~ore:clay_robot_ore ()
+                 ; obsidian_robot =
+                     Cost.create ~ore:obsidian_robot_ore ~clay:obsidian_robot_clay ()
+                 ; geode_robot =
+                     Cost.create ~ore:geode_robot_ore ~obsidian:geode_robot_obsidian ()
+                 }))
+    ;;
+  end
+
+  module State = struct
+    module T = struct
+      type t =
+        { inventory : Cost.t
+        ; ore_robots : int
+        ; clay_robots : int
+        ; obsidian_robots : int
+        ; geode_robots : int
+        ; minutes_remaining : int
+        ; geode_count : int
+        }
+      [@@deriving sexp_of, compare, hash, fields]
+    end
+
+    include T
+    include Comparable.Make_plain (T)
+    include Hashable.Make_plain (T)
+  end
+
+  let compute (blueprint : Blueprint.t) =
+    let current_max = ref 0 in
+    let max_compute ~f =
+      List.map
+        ~f
+        [ blueprint.ore_robot
+        ; blueprint.geode_robot
+        ; blueprint.clay_robot
+        ; blueprint.obsidian_robot
+        ]
+      |> List.max_elt ~compare
+      |> Option.value_exn
+    in
+    let max_ore = max_compute ~f:Cost.ore in
+    let max_clay = max_compute ~f:Cost.clay in
+    let max_obsidian = max_compute ~f:Cost.obsidian in
+    Memo.recursive ~hashable:State.hashable (fun compute state ->
+        let open Cost.O in
+        if state.minutes_remaining <= 0
+        then (
+          current_max := Int.max state.geode_count !current_max;
+          state.geode_count)
+        else if (state.minutes_remaining * state.geode_robots)
+                + (state.minutes_remaining * (state.minutes_remaining - 1) / 2)
+                + state.geode_count
+                <= !current_max
+        then state.geode_count (* Will get disregarded *)
+        else (
+          let collectable_this_round =
+            Cost.create
+              ~ore:state.ore_robots
+              ~clay:state.clay_robots
+              ~obsidian:state.obsidian_robots
+              ()
+          in
+          let geode_count = state.geode_count + state.geode_robots in
+          let maybe_buy_robot field (cost : Cost.t) =
+            if state.inventory >=$ cost
+            then
+              Some
+                (Fieldslib.Field.fset
+                   field
+                   { state with inventory = state.inventory -$ cost }
+                   (Fieldslib.Field.get field state + 1))
+            else None
+          in
+          let new_states =
+            state
+            :: List.filter_opt
+                 [ maybe_buy_robot State.Fields.ore_robots blueprint.ore_robot
+                 ; maybe_buy_robot State.Fields.clay_robots blueprint.clay_robot
+                 ; maybe_buy_robot State.Fields.obsidian_robots blueprint.obsidian_robot
+                 ; maybe_buy_robot State.Fields.geode_robots blueprint.geode_robot
+                 ]
+          in
+          List.map new_states ~f:(fun state ->
+              (* No point in doing this. These conditions might seem contradictory, but if
+               * the first option matches and we didn't consider building a geode robot,
+               * then we're being inefficient. *)
+              if (state.inventory >=$ blueprint.ore_robot
+                 && state.inventory >=$ blueprint.geode_robot
+                 && state.inventory >=$ blueprint.obsidian_robot
+                 && state.inventory >=$ blueprint.clay_robot)
+                 || state.ore_robots > max_ore
+                 || state.obsidian_robots > max_obsidian
+                 || state.clay_robots > max_clay
+              then 0
+              else (
+                let state =
+                  { state with
+                    geode_count
+                  ; minutes_remaining = state.minutes_remaining - 1
+                  ; inventory = state.inventory +$ collectable_this_round
+                  }
+                in
+                compute state))
+          |> List.max_elt ~compare
+          |> Option.value ~default:0))
+  ;;
+
+  let quality_level blueprint =
+    let state =
+      { State.inventory = Cost.zero
+      ; ore_robots = 1
+      ; clay_robots = 0
+      ; obsidian_robots = 0
+      ; geode_robots = 0
+      ; minutes_remaining = 24
+      ; geode_count = 0
+      }
+    in
+    let result = compute blueprint state in
+    Gc.compact ();
+    result * blueprint.index
+  ;;
+
+  let total_quality blueprints = List.sum (module Int) blueprints ~f:quality_level
+
+  let just_input blueprint =
+    let state =
+      { State.inventory = Cost.zero
+      ; ore_robots = 1
+      ; clay_robots = 0
+      ; obsidian_robots = 0
+      ; geode_robots = 0
+      ; minutes_remaining = 32
+      ; geode_count = 0
+      }
+    in
+    let result = compute blueprint state in
+    Gc.compact ();
+    result
+  ;;
+
+  let product blueprints =
+    List.fold ~init:1 (List.take blueprints 3) ~f:(fun product blueprint ->
+        product * just_input blueprint)
+  ;;
+
+  module Part_1 = struct
+    include Int_result
+
+    let run = total_quality
+  end
+
+  module Part_2 = struct
+    include Int_result
+
+    let run = product
+  end
+end
+
+let () = Framework.register ~day:19 (module Day_19)
 let link () = ()
