@@ -2392,4 +2392,93 @@ module Day_19 = struct
 end
 
 let () = Framework.register ~day:19 (module Day_19)
+
+module Day_20 = struct
+  module Input = struct
+    type t = int list
+
+    let load in_channel = In_channel.input_lines in_channel |> List.map ~f:Int.of_string
+  end
+
+  module Chain = struct
+    type t =
+      { value : int
+      ; mutable prev : t option
+      ; mutable next : t option
+      }
+
+    let prev t = Option.value_exn t.prev
+    let next t = Option.value_exn t.next
+    let set_prev t prev = t.prev <- Some prev
+    let set_next t next = t.next <- Some next
+  end
+
+  let rec make_chain (head : Chain.t) (prev : Chain.t) acc = function
+    | [] ->
+      Chain.set_next prev head;
+      Chain.set_prev head prev;
+      prev.next <- Some head;
+      head.prev <- Some prev;
+      head :: List.rev acc
+    | value :: rest ->
+      let node = { Chain.value; prev = Some prev; next = None } in
+      Chain.set_next prev node;
+      make_chain head node (node :: acc) rest
+  ;;
+
+  let make_chain = function
+    | [] -> raise_s [%message "Cannot make chain from an empty list"]
+    | value :: rest ->
+      let head = { Chain.value; prev = None; next = None } in
+      make_chain head head [] rest
+  ;;
+
+  let rec locate node n =
+    if n = 0
+    then node
+    else if n < 0
+    then locate (Chain.prev node) (n + 1)
+    else locate (Chain.next node) (n - 1)
+  ;;
+
+  let move node n =
+    let old_next = Chain.next node in
+    let old_prev = Chain.prev node in
+    Chain.set_next old_prev old_next;
+    Chain.set_prev old_next old_prev;
+    let new_next = locate old_next n in
+    let new_prev = Chain.prev new_next in
+    Chain.set_next node new_next;
+    Chain.set_prev node new_prev;
+    Chain.set_prev new_next node;
+    Chain.set_next new_prev node
+  ;;
+
+  let solve input ~decryption_key ~number_of_mixes =
+    let input = List.map input ~f:(( * ) decryption_key) in
+    let length = List.length input in
+    let chain = make_chain input in
+    for _ = 1 to number_of_mixes do
+      List.iter chain ~f:(fun node -> move node (node.value mod (length - 1)))
+    done;
+    let zero_node = List.find_exn chain ~f:(fun chain -> chain.value = 0) in
+    (locate zero_node 1000).value
+    + (locate zero_node 2000).value
+    + (locate zero_node 3000).value
+  ;;
+
+  module Part_1 = struct
+    include Int_result
+
+    let run input = solve input ~decryption_key:1 ~number_of_mixes:1
+  end
+
+  module Part_2 = struct
+    include Int_result
+
+    let run input = solve input ~decryption_key:811589153 ~number_of_mixes:10
+  end
+end
+
+let () = Framework.register ~day:20 (module Day_20)
 let link () = ()
