@@ -1783,4 +1783,249 @@ module Day_16 = struct
 end
 
 let () = Framework.register ~day:16 (module Day_16)
+
+module Day_17 = struct
+  module Direction = struct
+    type t =
+      | Left
+      | Right
+  end
+
+  module Input = struct
+    type t = Direction.t list
+
+    let load in_channel =
+      In_channel.input_all in_channel
+      |> String.to_list
+      |> List.filter_map ~f:(function
+             | '<' -> Some Direction.Left
+             | '>' -> Some Right
+             | '\n' -> None
+             | c -> raise_s [%message "Bad char" (c : char)])
+    ;;
+  end
+
+  module Shapes = struct
+    let horizontal = [ 0b11110 ]
+    let plus = [ 0b01000; 0b11100; 0b01000 ]
+    let flipped_l = [ 0b00100; 0b00100; 0b11100 ]
+    let vertical = List.init 4 ~f:(const 0b10000)
+    let square = List.init 2 ~f:(const 0b11000)
+    let all = [ horizontal; plus; flipped_l; vertical; square ]
+
+    let line_to_string line =
+      String.init 7 ~f:(fun i -> if (1 lsl (6 - i)) land line <> 0 then '#' else '.')
+    ;;
+
+    let shape_to_string shape =
+      List.map shape ~f:line_to_string |> String.concat ~sep:"\n"
+    ;;
+
+    let%expect_test _ =
+      List.map all ~f:shape_to_string |> String.concat ~sep:"\n\n" |> print_endline;
+      [%expect
+        {|
+        ..####.
+
+        ...#...
+        ..###..
+        ...#...
+
+        ....#..
+        ....#..
+        ..###..
+
+        ..#....
+        ..#....
+        ..#....
+        ..#....
+
+        ..##...
+        ..##... |}]
+    ;;
+  end
+
+  let full_line = 0b1_111_111
+
+  let validate_top map ~top ~shape =
+    List.for_alli shape ~f:(fun i line ->
+        i <= top
+        && Map.find map (top - i) |> Option.value ~default:0 |> ( land ) line |> ( = ) 0)
+  ;;
+
+  let validate_shape map ~top ~shape ~original_shape =
+    List.for_all2_exn shape original_shape ~f:(fun a b -> Int.popcount a = Int.popcount b)
+    && validate_top map ~top ~shape
+  ;;
+
+  let shift shape ~f = List.map shape ~f:(fun line -> f line land full_line)
+
+  let shift shape direction =
+    shift
+      shape
+      ~f:
+        (match direction with
+        | Direction.Left -> fun line -> line lsl 1
+        | Right -> fun line -> line lsr 1)
+  ;;
+
+  let%expect_test _ =
+    shift Shapes.flipped_l Right |> Shapes.shape_to_string |> print_endline;
+    [%expect {|
+      .....#.
+      .....#.
+      ...###. |}]
+  ;;
+
+  let simulate_single_drop ~top map direction shape =
+    let shifted = shift shape direction in
+    let shape =
+      if validate_shape map ~top ~shape:shifted ~original_shape:shape
+      then shifted
+      else shape
+    in
+    if validate_top map ~top:(top - 1) ~shape
+    then `Dropped shape
+    else
+      `Settled
+        (List.foldi shape ~init:map ~f:(fun i map line ->
+             Map.update map (top - i) ~f:(function
+                 | None -> line
+                 | Some existing -> existing lor line)))
+  ;;
+
+  let rec simulate_rock ~top map rock wind_sequence =
+    let (index, direction), wind_sequence =
+      Sequence.next wind_sequence |> Option.value_exn
+    in
+    match simulate_single_drop ~top map direction rock with
+    | `Dropped shape -> simulate_rock ~top:(top - 1) map shape wind_sequence
+    | `Settled map -> index, map, top + 1, wind_sequence
+  ;;
+
+  let simulate_rock ~top map rock wind_sequence =
+    simulate_rock ~top:(top + List.length rock + 2) map rock wind_sequence
+  ;;
+
+  let rec shift_right ~f line mask =
+    if f (line land mask) 0
+    then (
+      let new_mask = mask lsr 1 in
+      if new_mask = 0 then mask else shift_right ~f line new_mask)
+    else mask lsl 1
+  ;;
+
+  let rec shift_left ~f line mask =
+    if f (line land mask) 0
+    then (
+      let new_mask = mask lsl 1 in
+      if new_mask > full_line then mask else shift_left ~f line new_mask)
+    else mask lsr 1
+  ;;
+
+  let is_set_f = ( <> )
+  let unset_f = ( = )
+
+  let left_hole line mask =
+    if line land mask <> 0
+    then shift_right ~f:is_set_f line mask
+    else shift_left ~f:unset_f line mask
+  ;;
+
+  let right_hole line mask =
+    if line land mask <> 0
+    then shift_left ~f:is_set_f line mask
+    else shift_right ~f:unset_f line mask
+  ;;
+
+  let visibility map =
+    Map.to_sequence ~order:`Decreasing_key map
+    |> Sequence.fold_until
+         ~init:(0b1_000_00, 0b1, [])
+         ~f:(fun (left_mask, right_mask, visibility) (_, line) ->
+           let left_mask = left_hole line left_mask in
+           let right_mask = right_hole line right_mask in
+           if right_mask >= left_mask
+           then Stop visibility
+           else Continue (left_mask, right_mask, line :: visibility))
+         ~finish:(fun (_, _, visibility) -> visibility)
+  ;;
+
+  module Repetition_tracker = struct
+    module T = struct
+      type t =
+        { rock_index : int
+        ; wind_index : int
+        ; visibility : int list
+        }
+      [@@deriving sexp_of, compare, hash]
+    end
+
+    include T
+    include Comparable.Make_plain (T)
+  end
+
+  let compute_cycle wind_sequence rock_sequence =
+    Sequence.fold_until
+      rock_sequence
+      ~init:(Int.Map.empty, wind_sequence, 0, 0, Repetition_tracker.Map.empty, 0)
+      ~f:
+        (fun (map, wind_sequence, top, wind_index, repetition_tracker, i)
+             (rock_index, rock) ->
+        let visibility = visibility map in
+        let key = { Repetition_tracker.rock_index; wind_index; visibility } in
+        match Map.find repetition_tracker key with
+        | Some (previous_index, previous_top) ->
+          Stop (previous_index, i - previous_index, top - previous_top)
+        | None ->
+          let repetition_tracker = Map.set repetition_tracker ~key ~data:(i, top) in
+          let wind_index, map, new_top, wind_sequence =
+            simulate_rock ~top map rock wind_sequence
+          in
+          Continue
+            ( map
+            , wind_sequence
+            , Int.max top new_top
+            , wind_index
+            , repetition_tracker
+            , i + 1 ))
+      ~finish:(fun _ -> assert false)
+  ;;
+
+  let simulate input ~count =
+    let cycle_with_indices list =
+      List.mapi list ~f:Tuple2.create |> Sequence.cycle_list_exn
+    in
+    let wind_sequence = cycle_with_indices input in
+    let rock_sequence = cycle_with_indices Shapes.all in
+    let repeat_start, repeat_cycle, height = compute_cycle wind_sequence rock_sequence in
+    let _, _, top =
+      Sequence.fold
+        (Sequence.take
+           rock_sequence
+           (((count - repeat_start) % repeat_cycle) + repeat_start))
+        ~init:(Int.Map.empty, wind_sequence, 0)
+        ~f:(fun (map, wind_sequence, top) (_rock_index, rock) ->
+          let _wind_index, map, new_top, wind_sequence =
+            simulate_rock ~top map rock wind_sequence
+          in
+          map, wind_sequence, Int.max top new_top)
+    in
+    (Int.max 0 (count - repeat_start) / repeat_cycle * height) + top
+  ;;
+
+  module Part_1 = struct
+    include Int_result
+
+    let run input = simulate input ~count:2022
+  end
+
+  module Part_2 = struct
+    include Int_result
+
+    let run input = simulate input ~count:1_000_000_000_000
+  end
+end
+
+let () = Framework.register ~day:17 (module Day_17)
 let link () = ()
