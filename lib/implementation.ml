@@ -1958,7 +1958,7 @@ module Day_17 = struct
         ; wind_index : int
         ; visibility : int list
         }
-      [@@deriving sexp_of, compare, hash]
+      [@@deriving sexp_of, compare]
     end
 
     include T
@@ -2028,4 +2028,140 @@ module Day_17 = struct
 end
 
 let () = Framework.register ~day:17 (module Day_17)
+
+module Day_18 = struct
+  module Coord = struct
+    module T = struct
+      type t =
+        { x : int
+        ; y : int
+        ; z : int
+        }
+      [@@deriving sexp_of, compare, hash, fields]
+    end
+
+    include T
+    include Comparable.Make_plain (T)
+    include Hashable.Make_plain (T)
+
+    let neighbors { x; y; z } =
+      List.map
+        ~f:(fun (dx, dy, dz) -> { x = x + dx; y = y + dy; z = z + dz })
+        [ -1, 0, 0; 1, 0, 0; 0, -1, 0; 0, 1, 0; 0, 0, -1; 0, 0, 1 ]
+    ;;
+  end
+
+  module Input = struct
+    type t = Coord.t list
+
+    let load in_channel =
+      In_channel.input_lines in_channel
+      |> List.map ~f:(fun line ->
+             Scanf.sscanf line "%d,%d,%d" (fun x y z -> { Coord.x; y; z }))
+    ;;
+  end
+
+  let total_surface_area_set set =
+    Set.sum
+      (module Int)
+      set
+      ~f:(fun coord ->
+        List.count (Coord.neighbors coord) ~f:(fun coord -> not (Set.mem set coord)))
+  ;;
+
+  let total_surface_area input =
+    let set = Coord.Set.of_list input in
+    total_surface_area_set set
+  ;;
+
+  let edges (input : Coord.t list) =
+    let reduce ~f =
+      List.reduce_exn input ~f:(fun a b ->
+          { x = f a.x b.x; y = f a.y b.y; z = f a.z b.z })
+    in
+    reduce ~f:Int.min, reduce ~f:Int.max
+  ;;
+
+  let all_relevant ~(minimum : Coord.t) ~(maximum : Coord.t) =
+    let sequence f = Sequence.range ~stop:`inclusive (f minimum) (f maximum) in
+    let%bind.Sequence x = sequence Coord.x in
+    let%bind.Sequence y = sequence Coord.y in
+    let%map.Sequence z = sequence Coord.z in
+    { Coord.x; y; z }
+  ;;
+
+  let out_of_edge ~(minimum : Coord.t) ~(maximum : Coord.t) { Coord.x; y; z } =
+    x < minimum.x
+    || y < minimum.y
+    || z < minimum.z
+    || x > maximum.x
+    || y > maximum.y
+    || z > maximum.z
+  ;;
+
+  let search_exposure ~minimum ~maximum exposure start =
+    match Map.find exposure start with
+    | Some v -> v, exposure
+    | None ->
+      let explored = Coord.Set.singleton start in
+      let rec loop explored = function
+        | [] -> `Not_exposed, explored
+        | coord :: rest ->
+          let neighbors =
+            Coord.neighbors coord
+            |> List.filter ~f:(fun neighbor ->
+                   (not (Set.mem explored neighbor))
+                   &&
+                   match Map.find exposure neighbor with
+                   | Some `Not_exposed -> false
+                   | None | Some `Exposed -> true)
+          in
+          let explored = Coord.Set.of_list neighbors |> Set.union explored in
+          if List.exists neighbors ~f:(fun neighbor ->
+                 out_of_edge ~minimum ~maximum neighbor
+                 ||
+                 match Map.find exposure neighbor with
+                 | Some `Exposed -> true
+                 | None | Some `Not_exposed -> false)
+          then `Exposed, explored
+          else loop explored (List.rev_append neighbors rest)
+      in
+      let result, explored = loop explored [ start ] in
+      ( result
+      , Set.fold explored ~init:exposure ~f:(fun exposure coord ->
+            Map.set exposure ~key:coord ~data:result) )
+  ;;
+
+  let bound input =
+    let minimum, maximum = edges input in
+    let set = Coord.Set.of_list input in
+    let exposure = Coord.Map.of_key_set ~f:(const `Not_exposed) set in
+    let _exposure, not_exposed =
+      Sequence.fold
+        (all_relevant ~minimum ~maximum)
+        ~init:(exposure, Coord.Set.empty)
+        ~f:(fun (exposure, not_exposed) coord ->
+          let result, exposure = search_exposure ~minimum ~maximum exposure coord in
+          ( exposure
+          , match result with
+            | `Exposed -> not_exposed
+            | `Not_exposed -> Set.add not_exposed coord ))
+    in
+    total_surface_area_set not_exposed
+  ;;
+
+  module Part_1 = struct
+    include Int_result
+
+    let run = total_surface_area
+  end
+
+  module Part_2 = struct
+    include Int_result
+
+    let run = bound
+  end
+end
+
+let () = Framework.register ~day:18 (module Day_18)
 let link () = ()
