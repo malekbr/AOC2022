@@ -2481,4 +2481,218 @@ module Day_20 = struct
 end
 
 let () = Framework.register ~day:20 (module Day_20)
+
+module Day_21 = struct
+  module Decimal = struct
+    type t =
+      { num : int
+      ; den : int
+      }
+    [@@deriving compare, equal]
+
+    let of_int num = { num; den = 1 }
+    let zero = of_int 0
+    let rec gcd a b = if b = 0 then a else gcd b (a mod b)
+
+    let to_string { num; den } =
+      if den = 1 then Int.to_string num else sprintf "%d/%d" num den
+    ;;
+
+    let simplify { num; den } =
+      if den = 0
+      then raise_s [%message "Denominator is 0"]
+      else if num = 0
+      then zero
+      else (
+        let gcd = gcd num den in
+        let t = { num = num / gcd; den = den / gcd } in
+        if t.den < 0 then { num = -t.num; den = -t.den } else t)
+    ;;
+
+    let ( + ) a b =
+      simplify { num = (a.num * b.den) + (b.num * a.den); den = a.den * b.den }
+    ;;
+
+    let ( - ) a b =
+      simplify { num = (a.num * b.den) - (b.num * a.den); den = a.den * b.den }
+    ;;
+
+    let ( / ) a b = simplify { num = a.num * b.den; den = a.den * b.num }
+    let ( * ) a b = simplify { num = a.num * b.num; den = a.den * b.den }
+  end
+
+  module With_unknown = struct
+    (* a0 + a1 * x *)
+    type t =
+      { a0 : Decimal.t
+      ; a1 : Decimal.t
+      }
+
+    let to_string { a0; a1 } = sprintf !"%{Decimal} + %{Decimal}*x" a0 a1
+
+    module O = struct
+      let ( + ) x y = Decimal.{ a0 = x.a0 + y.a0; a1 = x.a1 + y.a1 }
+      let ( - ) x y = Decimal.{ a0 = x.a0 - y.a0; a1 = x.a1 - y.a1 }
+
+      let ( * ) x y =
+        let mul { a0; a1 } d = Decimal.{ a0 = a0 * d; a1 = a1 * d } in
+        if x.a1.num = 0
+        then mul y x.a0
+        else if y.a1.num = 0
+        then mul x y.a0
+        else
+          raise_s
+            [%message
+              "Cannot multiply two numbers with an x component"
+                (to_string x)
+                (to_string y)]
+      ;;
+
+      let ( / ) x y =
+        if y.a1.num = 0
+        then Decimal.{ a0 = x.a0 / y.a0; a1 = x.a1 / y.a0 }
+        else raise_s [%message "Cannot divide by x" (to_string x) (to_string y)]
+      ;;
+    end
+
+    include O
+  end
+
+  module Operation = struct
+    type t =
+      | Add
+      | Sub
+      | Mul
+      | Div
+    [@@deriving sexp_of, compare]
+
+    let operation =
+      let open Decimal in
+      function
+      | Add -> ( + )
+      | Sub -> ( - )
+      | Mul -> ( * )
+      | Div -> ( / )
+    ;;
+
+    let operation_with_unknown =
+      let open With_unknown in
+      function
+      | Add -> ( + )
+      | Sub -> ( - )
+      | Mul -> ( * )
+      | Div -> ( / )
+    ;;
+  end
+
+  module Expr = struct
+    type t =
+      | Value of int
+      | Operation of Operation.t * string * string
+    [@@deriving sexp_of, compare]
+  end
+
+  module Monkey = struct
+    type t =
+      { name : string
+      ; expr : Expr.t
+      }
+    [@@deriving sexp_of, compare]
+  end
+
+  module Input = struct
+    type t = Monkey.t list
+
+    module Parse = struct
+      open! Angstrom
+
+      let number = take_while1 Char.is_digit |> map ~f:Int.of_string
+      let monkey = take_while1 Char.is_alpha
+
+      let operation =
+        let open Operation in
+        choice
+          [ char '+' *> return Add
+          ; char '-' *> return Sub
+          ; char '*' *> return Mul
+          ; char '/' *> return Div
+          ]
+      ;;
+
+      let expr =
+        lift (fun number -> Expr.Value number) number
+        <|> let%mapn.Angstrom a = monkey
+            and operation = char ' ' *> operation <* char ' '
+            and b = monkey in
+            Expr.Operation (operation, a, b)
+      ;;
+
+      let line =
+        let%mapn.Angstrom name = monkey <* string ": "
+        and expr = expr in
+        { Monkey.name; expr }
+      ;;
+
+      let parser = many (line <* end_of_line)
+      let parse s = Angstrom.parse_string ~consume:All parser s |> Result.ok_or_failwith
+    end
+
+    let load in_channel = In_channel.input_all in_channel |> Parse.parse
+  end
+
+  let solve input =
+    let monkey_map =
+      List.map input ~f:(fun { Monkey.name; expr } -> name, expr)
+      |> String.Map.of_alist_exn
+    in
+    let solve =
+      Memo.recursive ~hashable:String.hashable (fun solve monkey ->
+          match Map.find_exn monkey_map monkey with
+          | Value i -> Decimal.of_int i
+          | Operation (operation, a, b) ->
+            Operation.operation operation (solve a) (solve b))
+    in
+    solve "root"
+  ;;
+
+  (* Used this to determine that we can solve as a system of linear
+   * equations. *)
+  let solve_with_unknown input =
+    let monkey_map =
+      List.map input ~f:(fun { Monkey.name; expr } -> name, expr)
+      |> String.Map.of_alist_exn
+    in
+    let solve =
+      Memo.recursive ~hashable:String.hashable (fun solve monkey ->
+          if String.equal monkey "humn"
+          then { With_unknown.a0 = Decimal.zero; a1 = Decimal.of_int 1 }
+          else (
+            match Map.find_exn monkey_map monkey with
+            | Value value -> { With_unknown.a0 = Decimal.of_int value; a1 = Decimal.zero }
+            | Operation (operation, a, b) ->
+              Operation.operation_with_unknown operation (solve a) (solve b)))
+    in
+    match Map.find_exn monkey_map "root" with
+    | Operation (_, a, b) ->
+      let zero_equation = With_unknown.( - ) (solve a) (solve b) in
+      Decimal.(zero - (zero_equation.a0 / zero_equation.a1))
+    | Value n -> raise_s [%message "Root is constant" (n : int)]
+  ;;
+
+  module Part_1 = struct
+    type t = Decimal.t
+
+    let show decimal = Decimal.to_string decimal |> print_endline
+    let run = solve
+  end
+
+  module Part_2 = struct
+    type t = Decimal.t
+
+    let show decimal = Decimal.to_string decimal |> print_endline
+    let run = solve_with_unknown
+  end
+end
+
+let () = Framework.register ~day:21 (module Day_21)
 let link () = ()
