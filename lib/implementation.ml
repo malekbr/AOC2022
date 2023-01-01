@@ -1518,4 +1518,269 @@ module Day_15 = struct
 end
 
 let () = Framework.register ~day:15 (module Day_15)
+
+module Day_16 = struct
+  module Valve = struct
+    type t =
+      { name : string
+      ; flow_rate : int
+      ; connected_valves : string list
+      }
+  end
+
+  module Input = struct
+    type t = Valve.t list
+
+    module Parse = struct
+      open! Angstrom
+
+      let number = take_while1 Char.is_digit |> map ~f:Int.of_string
+      let name = take_while1 Char.is_uppercase
+
+      let line =
+        let%mapn.Angstrom name = string "Valve " *> name
+        and flow_rate = string " has flow rate=" *> number
+        and connected_valves =
+          (string "; tunnels lead to valves " <|> string "; tunnel leads to valve ")
+          *> sep_by1 (string ", ") name
+        in
+        { Valve.name; flow_rate; connected_valves }
+      ;;
+
+      let parser = many (line <* end_of_line)
+      let parse s = Angstrom.parse_string ~consume:All parser s |> Result.ok_or_failwith
+    end
+
+    let load in_channel = In_channel.input_all in_channel |> Parse.parse
+  end
+
+  module Bitset = struct
+    module Tracker = struct
+      module Id = Unique_id.Int ()
+
+      type t =
+        { id : Id.t
+        ; mapping : int String.Table.t
+        ; mutable lowest_available : int
+        }
+
+      let create () =
+        { id = Id.create (); mapping = String.Table.create (); lowest_available = 0 }
+      ;;
+
+      let lookup t v = Hashtbl.find t.mapping v
+
+      let lookup_or_assign t v =
+        match Hashtbl.find t.mapping v with
+        | None ->
+          let available = t.lowest_available in
+          if available > 62
+          then raise_s [%message "Can only support 63 elements in the bitset"];
+          t.lowest_available <- available + 1;
+          let bitset = 1 lsl available in
+          Hashtbl.set t.mapping ~key:v ~data:bitset;
+          bitset
+        | Some n -> n
+      ;;
+
+      let compare a b = Id.compare a.id b.id
+    end
+
+    type t =
+      { tracker : (Tracker.t[@sexp.opaque])
+      ; set : int
+      }
+    [@@deriving sexp_of, compare]
+
+    let empty tracker = { tracker; set = 0 }
+
+    let mem t v =
+      match Tracker.lookup t.tracker v with
+      | None -> false
+      | Some v -> Int.O.(t.set land v <> 0)
+    ;;
+
+    let add t v = { t with set = Tracker.lookup_or_assign t.tracker v lor t.set }
+
+    let powerset_int =
+      Memo.recursive ~hashable:Int.hashable (fun powerset_int set ->
+          if Int.equal set 0
+          then Int.Set.singleton 0
+          else (
+            let element = 1 lsl Int.ctz set in
+            let subset_powerset = powerset_int (set lxor element) in
+            Core.Set.union
+              subset_powerset
+              (Int.Set.map subset_powerset ~f:(fun set -> set lor element))))
+    ;;
+
+    let length t = Int.popcount t.set
+
+    let powerset t =
+      powerset_int t.set
+      |> Core.Set.to_sequence
+      |> Sequence.map ~f:(fun set -> { t with set })
+    ;;
+
+    let diff a b =
+      assert (phys_equal a.tracker b.tracker);
+      { a with set = a.set land lnot b.set }
+    ;;
+
+    let%expect_test _ =
+      print_s [%sexp (powerset_int 5 : Int.Set.t)];
+      [%expect {| (0 1 4 5) |}]
+    ;;
+  end
+
+  let valve_map valves =
+    List.map valves ~f:(fun valve -> valve.Valve.name, valve) |> String.Map.of_alist_exn
+  ;;
+
+  let distances start valves =
+    let valves_of_interest =
+      start
+      :: List.filter_map valves ~f:(fun valve ->
+             if valve.Valve.flow_rate > 0 then Some valve.name else None)
+    in
+    let valves_of_interest_set = String.Set.of_list valves_of_interest in
+    let valve_map = valve_map valves in
+    let bfs start =
+      let queue = Queue.create () in
+      let explored = String.Map.singleton start 0 in
+      Queue.enqueue queue (start, 0);
+      let rec loop explored =
+        match Queue.dequeue queue with
+        | None ->
+          Map.filter_keys explored ~f:(fun key ->
+              (not (String.equal key start)) && Set.mem valves_of_interest_set key)
+        | Some (valve, cost) ->
+          let cost = cost + 1 in
+          (Map.find_exn valve_map valve).connected_valves
+          |> List.fold ~init:explored ~f:(fun explored valve ->
+                 if Map.mem explored valve
+                 then explored
+                 else (
+                   Queue.enqueue queue (valve, cost);
+                   Map.set explored ~key:valve ~data:cost))
+          |> loop
+      in
+      loop explored
+    in
+    List.fold ~init:String.Map.empty valves_of_interest ~f:(fun adj valve ->
+        Map.set adj ~key:valve ~data:((Map.find_exn valve_map valve).flow_rate, bfs valve))
+  ;;
+
+  module State = struct
+    type t =
+      { opened : Bitset.t
+      ; total_flow : int
+      ; total_open : int
+      ; remaining_minutes : int
+      ; valve : string
+      }
+    [@@deriving sexp_of]
+  end
+
+  let search ~can_open ~remaining_minutes ~distances ~start =
+    let rec loop to_explore ~current_maximum =
+      match to_explore with
+      | [] -> current_maximum
+      | { State.opened; total_flow; total_open; remaining_minutes; valve } :: to_explore
+        ->
+        if remaining_minutes <= 1 (* Seems to speed things up a bit *)
+        then loop to_explore ~current_maximum
+        else (
+          let pressure, neighbors = Map.find_exn distances valve in
+          let total_flow, total_open, remaining_minutes, opened =
+            if Bitset.mem can_open valve
+            then (
+              let total_flow = total_flow + total_open in
+              let total_open = total_open + pressure in
+              let remaining_minutes = remaining_minutes - 1 in
+              let opened = Bitset.add opened valve in
+              total_flow, total_open, remaining_minutes, opened)
+            else total_flow, total_open, remaining_minutes, opened
+          in
+          let current_maximum =
+            Int.max current_maximum (total_flow + (total_open * remaining_minutes))
+          in
+          let to_explore =
+            Map.fold
+              neighbors
+              ~init:to_explore
+              ~f:(fun ~key:neighbor ~data:distance to_explore ->
+                if distance <= remaining_minutes
+                   && (not (Bitset.mem opened neighbor))
+                   && Bitset.mem can_open neighbor
+                then
+                  { State.remaining_minutes = remaining_minutes - distance
+                  ; total_open
+                  ; total_flow = total_flow + (total_open * distance)
+                  ; opened
+                  ; valve = neighbor
+                  }
+                  :: to_explore
+                else to_explore)
+          in
+          loop to_explore ~current_maximum)
+    in
+    loop
+      [ { State.remaining_minutes
+        ; total_open = 0
+        ; valve = start
+        ; total_flow = 0
+        ; opened = Bitset.empty can_open.tracker
+        }
+      ]
+      ~current_maximum:0
+  ;;
+
+  let all_useful_valves tracker valves =
+    List.filter_map valves ~f:(fun valve ->
+        if valve.Valve.flow_rate > 0 then Some valve.name else None)
+    |> List.fold ~init:(Bitset.empty tracker) ~f:Bitset.add
+  ;;
+
+  let part_1 start valves ~remaining_minutes =
+    let distances = distances start valves in
+    let can_open = all_useful_valves (Bitset.Tracker.create ()) valves in
+    search ~can_open ~remaining_minutes ~distances ~start
+  ;;
+
+  let split_set all_useful =
+    all_useful
+    |> Bitset.powerset
+    |> Sequence.filter_map ~f:(fun set ->
+           let diff = Bitset.diff all_useful set in
+           if Bitset.compare set diff <= 0 then Some (set, diff) else None)
+    |> Sequence.to_list
+  ;;
+
+  let part_2 valves ~remaining_minutes start =
+    let tracker = Bitset.Tracker.create () in
+    let all_useful = all_useful_valves tracker valves in
+    let distances = distances start valves in
+    let search can_open = search ~distances ~can_open ~remaining_minutes ~start in
+    let set_split = split_set all_useful in
+    set_split
+    |> List.map ~f:(fun (human, elephant) -> search human + search elephant)
+    |> List.max_elt ~compare
+    |> Option.value ~default:0
+  ;;
+
+  module Part_1 = struct
+    include Int_result
+
+    let run input = part_1 "AA" input ~remaining_minutes:30
+  end
+
+  module Part_2 = struct
+    include Int_result
+
+    let run input = part_2 input "AA" ~remaining_minutes:26
+  end
+end
+
+let () = Framework.register ~day:16 (module Day_16)
 let link () = ()
