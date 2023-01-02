@@ -3395,4 +3395,125 @@ module Day_22 = struct
 end
 
 let () = Framework.register ~day:22 (module Day_22)
+
+module Day_23 = struct
+  module Pos = struct
+    module T = struct
+      type t = int * int [@@deriving sexp_of, compare]
+    end
+
+    include T
+    include Comparable.Make_plain (T)
+
+    module O = struct
+      let ( + ) (a, b) (c, d) = a + c, b + d
+    end
+
+    include O
+  end
+
+  module Input = struct
+    type t = Pos.Set.t [@@deriving sexp_of, compare]
+
+    let load in_channel =
+      In_channel.input_lines in_channel
+      |> List.foldi ~init:Pos.Set.empty ~f:(fun row init line ->
+             String.foldi line ~init ~f:(fun column set -> function
+               | '#' -> Set.add set (row, column)
+               | _ -> set))
+    ;;
+  end
+
+  let positions_to_consider = [ -1, 0; 1, 0; 0, -1; 0, 1 ]
+
+  let neighbor_positions = function
+    | 0, n -> [ 0, n; 1, n; -1, n ]
+    | n, 0 -> [ n, 0; n, -1; n, 1 ]
+    | pos -> raise_s [%message "neighbor_positions: invalid position" (pos : Pos.t)]
+  ;;
+
+  let all_neighbors =
+    List.concat_map positions_to_consider ~f:neighbor_positions
+    |> List.dedup_and_sort ~compare:Pos.compare
+  ;;
+
+  let decide elf_position current_positions positions_to_consider =
+    if List.for_all all_neighbors ~f:(fun neighbor_position ->
+           Pos.O.(neighbor_position + elf_position) |> Set.mem current_positions |> not)
+    then None
+    else
+      Sequence.find_map positions_to_consider ~f:(fun position ->
+          if List.for_all (neighbor_positions position) ~f:(fun neighbor_position ->
+                 Pos.O.(neighbor_position + elf_position)
+                 |> Set.mem current_positions
+                 |> not)
+          then Some Pos.O.(position + elf_position)
+          else None)
+  ;;
+
+  let single_round_decisions current_positions positions_to_consider =
+    let positions_to_consider = Sequence.take positions_to_consider 4 in
+    Set.fold current_positions ~init:Pos.Map.empty ~f:(fun considered_targets pos ->
+        match decide pos current_positions positions_to_consider with
+        | None -> considered_targets
+        | Some target -> Map.add_multi considered_targets ~key:target ~data:pos)
+  ;;
+
+  let simulate_single_round current_positions positions_to_consider =
+    single_round_decisions current_positions positions_to_consider
+    |> Map.fold ~init:current_positions ~f:(fun ~key:target ~data positions ->
+           match data with
+           | [ single_original_position ] ->
+             Set.add (Set.remove positions single_original_position) target
+           | _ -> positions)
+  ;;
+
+  let simulate_sequence positions =
+    let positions_to_consider = Sequence.cycle_list_exn positions_to_consider in
+    Sequence.unfold
+      ~init:(positions, positions_to_consider)
+      ~f:(fun (positions, positions_to_consider) ->
+        let positions = simulate_single_round positions positions_to_consider in
+        Some (positions, (positions, Sequence.drop_eagerly positions_to_consider 1)))
+  ;;
+
+  let simulate positions ~number_rounds =
+    Sequence.nth_exn (simulate_sequence positions) number_rounds
+  ;;
+
+  let first_stable_round positions =
+    simulate_sequence positions
+    |> Sequence.fold_until
+         ~init:(1, positions)
+         ~f:(fun (i, previous) current ->
+           if Pos.Set.equal previous current then Stop i else Continue (i + 1, current))
+         ~finish:(fun _ -> assert false)
+  ;;
+
+  let bounding_box_empty_tiles positions =
+    let rows, columns =
+      Set.fold
+        positions
+        ~init:(Int.Set.empty, Int.Set.empty)
+        ~f:(fun (rows, columns) (row, column) -> Set.add rows row, Set.add columns column)
+    in
+    let height = Set.max_elt_exn rows - Set.min_elt_exn rows + 1 in
+    let width = Set.max_elt_exn columns - Set.min_elt_exn columns + 1 in
+    (height * width) - Set.length positions
+  ;;
+
+  module Part_1 = struct
+    include Int_result
+
+    let run input = simulate input ~number_rounds:10 |> bounding_box_empty_tiles
+  end
+
+  module Part_2 = struct
+    include Int_result
+
+    let run input = first_stable_round input
+  end
+end
+
+let () = Framework.register ~day:23 (module Day_23)
 let link () = ()
