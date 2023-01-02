@@ -2795,285 +2795,6 @@ module Day_22 = struct
     let of_indices ~row ~column = { row; column }
   end
 
-  module Vec3 = struct
-    module T = struct
-      type t =
-        { x : int
-        ; y : int
-        ; z : int
-        }
-      [@@deriving sexp_of, compare]
-    end
-
-    include T
-    include Comparable.Make_plain (T)
-
-    let zero = { x = 0; y = 0; z = 0 }
-
-    let cross a b =
-      { x = (a.y * b.z) - (a.z * b.y)
-      ; y = (a.z * b.x) - (a.x * b.z)
-      ; z = (a.x * b.y) - (a.y * b.x)
-      }
-    ;;
-
-    let parallel a b = equal (cross a b) zero
-  end
-
-  module Cube_face = struct
-    type t =
-      { up : Vec3.t
-      ; right : Vec3.t
-      }
-    [@@deriving sexp_of, compare]
-
-    let normal t = Vec3.cross t.right t.up
-
-    let rotate t direction =
-      match (direction : Direction.t) with
-      | Right -> { t with right = Vec3.cross t.up t.right }
-      | Left -> { t with right = Vec3.cross t.right t.up }
-      | Up -> { t with up = Vec3.cross t.up t.right }
-      | Down -> { t with up = Vec3.cross t.right t.up }
-    ;;
-
-    let%expect_test _ =
-      (* Based on the cube map in wikipedia *)
-      let start = { up = { x = 0; y = 1; z = 0 }; right = { x = 1; y = 0; z = 0 } } in
-      print_s [%message (normal start : Vec3.t)];
-      [%expect {| ("normal start" ((x 0) (y 0) (z 1))) |}];
-      print_s [%message (rotate start Left : t)];
-      [%expect
-        {| ("rotate start Left" ((up ((x 0) (y 1) (z 0))) (right ((x 0) (y 0) (z 1))))) |}];
-      print_s [%message (rotate start Up : t)];
-      [%expect
-        {| ("rotate start Up" ((up ((x 0) (y 0) (z -1))) (right ((x 1) (y 0) (z 0))))) |}];
-      print_s [%message (rotate start Down : t)];
-      [%expect
-        {| ("rotate start Down" ((up ((x 0) (y 0) (z 1))) (right ((x 1) (y 0) (z 0))))) |}];
-      print_s [%message (rotate start Right : t)];
-      [%expect
-        {|
-          ("rotate start Right"
-           ((up ((x 0) (y 1) (z 0))) (right ((x 0) (y 0) (z -1))))) |}];
-      print_s [%message (rotate (rotate start Right) Right : t)];
-      [%expect
-        {|
-          ("rotate (rotate start Right) Right"
-           ((up ((x 0) (y 1) (z 0))) (right ((x -1) (y 0) (z 0))))) |}]
-    ;;
-  end
-
-  (* Normalized face coordinates are such that each square is 1x1 wide.
-   * We want to return a mapping from position to the normal vector which
-   * uniquely identifies a face (since we're always folding on the outside)
-   * and a map from the normal vector to the coordinates (Cube_face.t) which
-   * will indicate the orientation in which the input maps to the cube face
-   * and the normalized face coordinate which will allow us to locate the next
-   * step post rotation.
-   *)
-  let fold normalized_face_coordinates =
-    let start_face =
-      { Cube_face.up = { x = 0; y = 1; z = 0 }; right = { x = 1; y = 0; z = 0 } }
-    in
-    let neighbors (pos : Pos.t) =
-      [ { pos with column = pos.column + 1 }, Direction.Right
-      ; { pos with column = pos.column - 1 }, Left
-      ; { pos with row = pos.row - 1 }, Up
-      ; { pos with row = pos.row + 1 }, Down
-      ]
-      |> List.filter ~f:(fun (pos, _direction) -> Set.mem normalized_face_coordinates pos)
-    in
-    let start = Set.min_elt_exn normalized_face_coordinates in
-    let explored = Pos.Set.singleton start in
-    let rec loop explored pos_map normal_map = function
-      | [] -> pos_map, normal_map
-      | (position, face) :: to_explore ->
-        let normal = Cube_face.normal face in
-        let pos_map = Map.add_exn pos_map ~key:position ~data:normal in
-        let normal_map = Map.add_exn normal_map ~key:normal ~data:(face, position) in
-        let explored, to_explore =
-          neighbors position
-          |> List.fold
-               ~init:(explored, to_explore)
-               ~f:(fun (explored, to_explore) (pos, direction) ->
-                 if Set.mem explored pos
-                 then explored, to_explore
-                 else (
-                   let explored = Set.add explored pos in
-                   let face = Cube_face.rotate face direction in
-                   explored, (pos, face) :: to_explore))
-        in
-        loop explored pos_map normal_map to_explore
-    in
-    loop explored Pos.Map.empty Vec3.Map.empty [ start, start_face ]
-  ;;
-
-  let%expect_test _ =
-    let input_faces =
-      [ 0, 2; 1, 0; 1, 1; 1, 2; 2, 2; 2, 3 ]
-      |> List.map ~f:(fun (row, column) -> Pos.of_indices ~row ~column)
-      |> Pos.Set.of_list
-    in
-    let position_map, normal_map = fold input_faces in
-    print_s
-      [%message
-        (position_map : Vec3.t Pos.Map.t) (normal_map : (Cube_face.t * Pos.t) Vec3.Map.t)];
-    [%expect
-      {|
-      ((position_map
-        ((((row 0) (column 2)) ((x 0) (y 0) (z 1)))
-         (((row 1) (column 0)) ((x 0) (y 1) (z 0)))
-         (((row 1) (column 1)) ((x -1) (y 0) (z 0)))
-         (((row 1) (column 2)) ((x 0) (y -1) (z 0)))
-         (((row 2) (column 2)) ((x 0) (y 0) (z -1)))
-         (((row 2) (column 3)) ((x 1) (y 0) (z 0)))))
-       (normal_map
-        ((((x -1) (y 0) (z 0))
-          (((up ((x 0) (y 0) (z 1))) (right ((x 0) (y -1) (z 0))))
-           ((row 1) (column 1))))
-         (((x 0) (y -1) (z 0))
-          (((up ((x 0) (y 0) (z 1))) (right ((x 1) (y 0) (z 0))))
-           ((row 1) (column 2))))
-         (((x 0) (y 0) (z -1))
-          (((up ((x 0) (y -1) (z 0))) (right ((x 1) (y 0) (z 0))))
-           ((row 2) (column 2))))
-         (((x 0) (y 0) (z 1))
-          (((up ((x 0) (y 1) (z 0))) (right ((x 1) (y 0) (z 0))))
-           ((row 0) (column 2))))
-         (((x 0) (y 1) (z 0))
-          (((up ((x 0) (y 0) (z 1))) (right ((x -1) (y 0) (z 0))))
-           ((row 1) (column 0))))
-         (((x 1) (y 0) (z 0))
-          (((up ((x 0) (y -1) (z 0))) (right ((x 0) (y 0) (z 1))))
-           ((row 2) (column 3))))))) |}]
-  ;;
-
-  let coordinates_in_range { Pos.row; column } ~side_length =
-    row >= 0 && row < side_length && column >= 0 && column < side_length
-  ;;
-
-  let reset_coordinates { Pos.row; column } ~side_length =
-    { Pos.row = row % side_length; column = column % side_length }
-  ;;
-
-  (* Returns action for row coordinates and action for column coordinates. *)
-  let coordinate_adjustment
-      ~(original_coordinates : Cube_face.t)
-      ~(desired_coordinates : Cube_face.t)
-    =
-    if Vec3.parallel original_coordinates.up desired_coordinates.up
-    then (
-      assert (Vec3.parallel original_coordinates.right desired_coordinates.right);
-      ( (if Vec3.equal original_coordinates.up desired_coordinates.up
-        then `Same, `Row
-        else `Flip, `Row)
-      , if Vec3.equal original_coordinates.right desired_coordinates.right
-        then `Same, `Column
-        else `Flip, `Column ))
-    else (
-      assert (Vec3.parallel original_coordinates.up desired_coordinates.right);
-      assert (Vec3.parallel original_coordinates.right desired_coordinates.up);
-      ( (if Vec3.equal original_coordinates.up desired_coordinates.right
-        then `Same, `Column
-        else `Flip, `Column)
-      , if Vec3.equal original_coordinates.right desired_coordinates.up
-        then `Same, `Row
-        else `Flip, `Row ))
-  ;;
-
-  let%expect_test _ =
-    let sexp_of_adjustment = [%sexp_of: [ `Same | `Flip ] * [ `Row | `Column ]] in
-    let face1 =
-      { Cube_face.up = { x = 0; y = 1; z = 0 }; right = { x = 1; y = 0; z = 0 } }
-    in
-    let face2 =
-      { Cube_face.up = { x = 0; y = 1; z = 0 }; right = { x = -1; y = 0; z = 0 } }
-    in
-    let face3 =
-      { Cube_face.up = { x = -1; y = 0; z = 0 }; right = { x = 0; y = 1; z = 0 } }
-    in
-    print_s
-      [%message
-        (coordinate_adjustment ~original_coordinates:face1 ~desired_coordinates:face1
-          : adjustment * adjustment)];
-    print_s
-      [%message
-        (coordinate_adjustment ~original_coordinates:face1 ~desired_coordinates:face2
-          : adjustment * adjustment)];
-    print_s
-      [%message
-        (coordinate_adjustment ~original_coordinates:face1 ~desired_coordinates:face3
-          : adjustment * adjustment)];
-    [%expect
-      {|
-      ("coordinate_adjustment ~original_coordinates:face1 ~desired_coordinates:face1"
-       ((Same Row) (Same Column)))
-      ("coordinate_adjustment ~original_coordinates:face1 ~desired_coordinates:face2"
-       ((Same Row) (Flip Column)))
-      ("coordinate_adjustment ~original_coordinates:face1 ~desired_coordinates:face3"
-       ((Same Column) (Flip Row))) |}]
-  ;;
-
-  let adjust_position_no_reset
-      ~(original_coordinates : Cube_face.t)
-      ~(desired_coordinates : Cube_face.t)
-      { Pos.row; column }
-    =
-    let row_adjustment, column_adjustment =
-      coordinate_adjustment ~original_coordinates ~desired_coordinates
-    in
-    let compute_adjustment (sign, source) =
-      let value =
-        match source with
-        | `Row -> row
-        | `Column -> column
-      in
-      match sign with
-      | `Flip -> -value
-      | `Same -> value
-    in
-    { Pos.row = compute_adjustment row_adjustment
-    ; column = compute_adjustment column_adjustment
-    }
-  ;;
-
-  let adjust_position
-      ~(original_coordinates : Cube_face.t)
-      ~(desired_coordinates : Cube_face.t)
-      ~side_length
-      pos
-    =
-    adjust_position_no_reset ~original_coordinates ~desired_coordinates pos
-    |> reset_coordinates ~side_length
-  ;;
-
-  let adjust_direction
-      ~(original_coordinates : Cube_face.t)
-      ~(desired_coordinates : Cube_face.t)
-      (direction : Direction.t)
-      : Direction.t
-    =
-    let original_direction : Pos.t =
-      match direction with
-      | Right -> { row = 0; column = 1 }
-      | Left -> { row = 0; column = -1 }
-      | Up -> { row = -1; column = 0 }
-      | Down -> { row = 1; column = 0 }
-    in
-    match
-      adjust_position_no_reset
-        ~original_coordinates
-        ~desired_coordinates
-        original_direction
-    with
-    | { row = 0; column = 1 } -> Right
-    | { row = 0; column = -1 } -> Left
-    | { row = -1; column = 0 } -> Up
-    | { row = 1; column = 0 } -> Down
-    | pos -> raise_s [%message "Invalid direction post adjustment" (pos : Pos.t)]
-  ;;
-
   module Preprocessed = struct
     type t =
       { right : (Pos.t * Direction.t) Pos.Map.t
@@ -3183,6 +2904,430 @@ module Day_22 = struct
     ;;
   end
 
+  module Part_2_preprocess = struct
+    module Vec3 = struct
+      module T = struct
+        type t =
+          { x : int
+          ; y : int
+          ; z : int
+          }
+        [@@deriving sexp_of, compare]
+      end
+
+      include T
+      include Comparable.Make_plain (T)
+
+      let zero = { x = 0; y = 0; z = 0 }
+
+      let cross a b =
+        { x = (a.y * b.z) - (a.z * b.y)
+        ; y = (a.z * b.x) - (a.x * b.z)
+        ; z = (a.x * b.y) - (a.y * b.x)
+        }
+      ;;
+
+      let parallel a b = equal (cross a b) zero
+    end
+
+    module Cube_face = struct
+      type t =
+        { up : Vec3.t
+        ; right : Vec3.t
+        }
+      [@@deriving sexp_of, compare]
+
+      let normal t = Vec3.cross t.right t.up
+
+      let rotate t direction =
+        match (direction : Direction.t) with
+        | Right -> { t with right = Vec3.cross t.up t.right }
+        | Left -> { t with right = Vec3.cross t.right t.up }
+        | Up -> { t with up = Vec3.cross t.up t.right }
+        | Down -> { t with up = Vec3.cross t.right t.up }
+      ;;
+
+      let%expect_test _ =
+        (* Based on the cube map in wikipedia *)
+        let start = { up = { x = 0; y = 1; z = 0 }; right = { x = 1; y = 0; z = 0 } } in
+        print_s [%message (normal start : Vec3.t)];
+        [%expect {| ("normal start" ((x 0) (y 0) (z 1))) |}];
+        print_s [%message (rotate start Left : t)];
+        [%expect
+          {| ("rotate start Left" ((up ((x 0) (y 1) (z 0))) (right ((x 0) (y 0) (z 1))))) |}];
+        print_s [%message (rotate start Up : t)];
+        [%expect
+          {| ("rotate start Up" ((up ((x 0) (y 0) (z -1))) (right ((x 1) (y 0) (z 0))))) |}];
+        print_s [%message (rotate start Down : t)];
+        [%expect
+          {| ("rotate start Down" ((up ((x 0) (y 0) (z 1))) (right ((x 1) (y 0) (z 0))))) |}];
+        print_s [%message (rotate start Right : t)];
+        [%expect
+          {|
+          ("rotate start Right"
+           ((up ((x 0) (y 1) (z 0))) (right ((x 0) (y 0) (z -1))))) |}];
+        print_s [%message (rotate (rotate start Right) Right : t)];
+        [%expect
+          {|
+          ("rotate (rotate start Right) Right"
+           ((up ((x 0) (y 1) (z 0))) (right ((x -1) (y 0) (z 0))))) |}]
+      ;;
+    end
+
+    (* Normalized face coordinates are such that each square is 1x1 wide.
+     * We want to return a mapping from position to the normal vector which
+     * uniquely identifies a face (since we're always folding on the outside)
+     * and a map from the normal vector to the coordinates (Cube_face.t) which
+     * will indicate the orientation in which the input maps to the cube face
+     * and the normalized face coordinate which will allow us to locate the next
+     * step post rotation.
+     *)
+    let fold normalized_face_coordinates =
+      let start_face =
+        { Cube_face.up = { x = 0; y = 1; z = 0 }; right = { x = 1; y = 0; z = 0 } }
+      in
+      let neighbors (pos : Pos.t) =
+        [ { pos with column = pos.column + 1 }, Direction.Right
+        ; { pos with column = pos.column - 1 }, Left
+        ; { pos with row = pos.row - 1 }, Up
+        ; { pos with row = pos.row + 1 }, Down
+        ]
+        |> List.filter ~f:(fun (pos, _direction) ->
+               Set.mem normalized_face_coordinates pos)
+      in
+      let start = Set.min_elt_exn normalized_face_coordinates in
+      let explored = Pos.Set.singleton start in
+      let rec loop explored normal_map = function
+        | [] -> normal_map
+        | (position, face) :: to_explore ->
+          let normal = Cube_face.normal face in
+          let normal_map = Map.add_exn normal_map ~key:normal ~data:(face, position) in
+          let explored, to_explore =
+            neighbors position
+            |> List.fold
+                 ~init:(explored, to_explore)
+                 ~f:(fun (explored, to_explore) (pos, direction) ->
+                   if Set.mem explored pos
+                   then explored, to_explore
+                   else (
+                     let explored = Set.add explored pos in
+                     let face = Cube_face.rotate face direction in
+                     explored, (pos, face) :: to_explore))
+          in
+          loop explored normal_map to_explore
+      in
+      loop explored Vec3.Map.empty [ start, start_face ]
+    ;;
+
+    let%expect_test _ =
+      let input_faces =
+        [ 0, 2; 1, 0; 1, 1; 1, 2; 2, 2; 2, 3 ]
+        |> List.map ~f:(fun (row, column) -> Pos.of_indices ~row ~column)
+        |> Pos.Set.of_list
+      in
+      let normal_map = fold input_faces in
+      print_s [%message (normal_map : (Cube_face.t * Pos.t) Vec3.Map.t)];
+      [%expect
+        {|
+      (normal_map
+       ((((x -1) (y 0) (z 0))
+         (((up ((x 0) (y 0) (z 1))) (right ((x 0) (y -1) (z 0))))
+          ((row 1) (column 1))))
+        (((x 0) (y -1) (z 0))
+         (((up ((x 0) (y 0) (z 1))) (right ((x 1) (y 0) (z 0))))
+          ((row 1) (column 2))))
+        (((x 0) (y 0) (z -1))
+         (((up ((x 0) (y -1) (z 0))) (right ((x 1) (y 0) (z 0))))
+          ((row 2) (column 2))))
+        (((x 0) (y 0) (z 1))
+         (((up ((x 0) (y 1) (z 0))) (right ((x 1) (y 0) (z 0))))
+          ((row 0) (column 2))))
+        (((x 0) (y 1) (z 0))
+         (((up ((x 0) (y 0) (z 1))) (right ((x -1) (y 0) (z 0))))
+          ((row 1) (column 0))))
+        (((x 1) (y 0) (z 0))
+         (((up ((x 0) (y -1) (z 0))) (right ((x 0) (y 0) (z 1))))
+          ((row 2) (column 3)))))) |}]
+    ;;
+
+    let coordinates_in_range { Pos.row; column } ~side_length =
+      row >= 0 && row < side_length && column >= 0 && column < side_length
+    ;;
+
+    let reset_coordinates { Pos.row; column } ~side_length =
+      { Pos.row = row % side_length; column = column % side_length }
+    ;;
+
+    (* Returns action for row coordinates and action for column coordinates. *)
+    let coordinate_adjustment
+        ~(original_coordinates : Cube_face.t)
+        ~(desired_coordinates : Cube_face.t)
+      =
+      if Vec3.parallel original_coordinates.up desired_coordinates.up
+      then (
+        assert (Vec3.parallel original_coordinates.right desired_coordinates.right);
+        ( (if Vec3.equal original_coordinates.up desired_coordinates.up
+          then `Same, `Row
+          else `Flip, `Row)
+        , if Vec3.equal original_coordinates.right desired_coordinates.right
+          then `Same, `Column
+          else `Flip, `Column ))
+      else (
+        assert (Vec3.parallel original_coordinates.up desired_coordinates.right);
+        assert (Vec3.parallel original_coordinates.right desired_coordinates.up);
+        ( (if Vec3.equal original_coordinates.up desired_coordinates.right
+          then `Same, `Column
+          else `Flip, `Column)
+        , if Vec3.equal original_coordinates.right desired_coordinates.up
+          then `Same, `Row
+          else `Flip, `Row ))
+    ;;
+
+    let%expect_test _ =
+      let sexp_of_adjustment = [%sexp_of: [ `Same | `Flip ] * [ `Row | `Column ]] in
+      let face1 =
+        { Cube_face.up = { x = 0; y = 1; z = 0 }; right = { x = 1; y = 0; z = 0 } }
+      in
+      let face2 =
+        { Cube_face.up = { x = 0; y = 1; z = 0 }; right = { x = -1; y = 0; z = 0 } }
+      in
+      let face3 =
+        { Cube_face.up = { x = -1; y = 0; z = 0 }; right = { x = 0; y = 1; z = 0 } }
+      in
+      print_s
+        [%message
+          (coordinate_adjustment ~original_coordinates:face1 ~desired_coordinates:face1
+            : adjustment * adjustment)];
+      print_s
+        [%message
+          (coordinate_adjustment ~original_coordinates:face1 ~desired_coordinates:face2
+            : adjustment * adjustment)];
+      print_s
+        [%message
+          (coordinate_adjustment ~original_coordinates:face1 ~desired_coordinates:face3
+            : adjustment * adjustment)];
+      [%expect
+        {|
+      ("coordinate_adjustment ~original_coordinates:face1 ~desired_coordinates:face1"
+       ((Same Row) (Same Column)))
+      ("coordinate_adjustment ~original_coordinates:face1 ~desired_coordinates:face2"
+       ((Same Row) (Flip Column)))
+      ("coordinate_adjustment ~original_coordinates:face1 ~desired_coordinates:face3"
+       ((Same Column) (Flip Row))) |}]
+    ;;
+
+    let adjust_position_no_reset
+        ~(original_coordinates : Cube_face.t)
+        ~(desired_coordinates : Cube_face.t)
+        ~side_length
+        { Pos.row; column }
+      =
+      let row_adjustment, column_adjustment =
+        coordinate_adjustment ~original_coordinates ~desired_coordinates
+      in
+      let compute_adjustment (sign, source) =
+        let value =
+          match source with
+          | `Row -> row
+          | `Column -> column
+        in
+        match sign with
+        | `Flip -> side_length - 1 - value
+        | `Same -> value
+      in
+      { Pos.row = compute_adjustment row_adjustment
+      ; column = compute_adjustment column_adjustment
+      }
+    ;;
+
+    let adjust_position
+        ~(original_coordinates : Cube_face.t)
+        ~(desired_coordinates : Cube_face.t)
+        ~side_length
+        pos
+      =
+      adjust_position_no_reset ~original_coordinates ~desired_coordinates ~side_length pos
+      |> reset_coordinates ~side_length
+    ;;
+
+    let adjust_direction
+        ~(original_coordinates : Cube_face.t)
+        ~(desired_coordinates : Cube_face.t)
+        (direction : Direction.t)
+        : Direction.t
+      =
+      let original_direction : Pos.t =
+        match direction with
+        | Right -> { row = 0; column = 1 }
+        | Left -> { row = 0; column = -1 }
+        | Up -> { row = -1; column = 0 }
+        | Down -> { row = 1; column = 0 }
+      in
+      match
+        adjust_position_no_reset
+          ~original_coordinates
+          ~desired_coordinates
+          ~side_length:1 (* Effectively negates the sign on flips *)
+          original_direction
+      with
+      | { row = 0; column = 1 } -> Right
+      | { row = 0; column = -1 } -> Left
+      | { row = -1; column = 0 } -> Up
+      | { row = 1; column = 0 } -> Down
+      | pos -> raise_s [%message "Invalid direction post adjustment" (pos : Pos.t)]
+    ;;
+
+    let%expect_test _ =
+      let face1 =
+        { Cube_face.up = { x = 0; y = 1; z = 0 }; right = { x = 1; y = 0; z = 0 } }
+      in
+      let face2 =
+        { Cube_face.up = { x = 0; y = 1; z = 0 }; right = { x = -1; y = 0; z = 0 } }
+      in
+      let face3 =
+        { Cube_face.up = { x = -1; y = 0; z = 0 }; right = { x = 0; y = 1; z = 0 } }
+      in
+      print_s
+        [%message
+          (adjust_direction ~original_coordinates:face1 ~desired_coordinates:face1 Right
+            : Direction.t)];
+      print_s
+        [%message
+          (adjust_direction ~original_coordinates:face1 ~desired_coordinates:face2 Right
+            : Direction.t)];
+      print_s
+        [%message
+          (adjust_direction ~original_coordinates:face1 ~desired_coordinates:face3 Right
+            : Direction.t)];
+      [%expect
+        {|
+      ("adjust_direction ~original_coordinates:face1 ~desired_coordinates:face1 Right"
+       Right)
+      ("adjust_direction ~original_coordinates:face1 ~desired_coordinates:face2 Right"
+       Left)
+      ("adjust_direction ~original_coordinates:face1 ~desired_coordinates:face3 Right"
+       Down) |}]
+    ;;
+
+    let compute_normalized_faces_and_side_length (input : Input.t) =
+      let total_count =
+        Array.sum (module Int) ~f:(Array.count ~f:Option.is_some) input.grid
+      in
+      let side_length = Int.to_float (total_count / 6) |> Float.sqrt |> Int.of_float in
+      assert (side_length * side_length * 6 = total_count);
+      let normalized_faces =
+        Array.foldi input.grid ~init:Pos.Set.empty ~f:(fun row init line ->
+            Array.foldi line ~init ~f:(fun column set -> function
+              | None -> set
+              | Some _ ->
+                Set.add
+                  set
+                  (Pos.of_indices ~row:(row / side_length) ~column:(column / side_length))))
+      in
+      assert (Set.length normalized_faces = 6);
+      normalized_faces, side_length
+    ;;
+
+    let next_step
+        normal_map
+        (direction : Direction.t)
+        ~local_position:{ Pos.row; column }
+        ~face_position
+        current_face
+        ~side_length
+      =
+      let new_position =
+        match direction with
+        | Right -> { Pos.row; column = column + 1 }
+        | Left -> { Pos.row; column = column - 1 }
+        | Up -> { Pos.row = row - 1; column }
+        | Down -> { Pos.row = row + 1; column }
+      in
+      if coordinates_in_range new_position ~side_length
+      then direction, new_position, face_position
+      else (
+        let next_face = Cube_face.rotate current_face direction in
+        let face_normal = Cube_face.normal next_face in
+        let face_local_orientation, face_position = Map.find_exn normal_map face_normal in
+        let new_position =
+          adjust_position
+            ~original_coordinates:next_face
+            ~desired_coordinates:face_local_orientation
+            ~side_length
+            new_position
+        in
+        let direction =
+          adjust_direction
+            ~original_coordinates:next_face
+            ~desired_coordinates:face_local_orientation
+            direction
+        in
+        direction, new_position, face_position)
+    ;;
+
+    let global_position ~(local_position : Pos.t) ~(face_position : Pos.t) ~side_length =
+      { Pos.row = (face_position.row * side_length) + local_position.row
+      ; column = (face_position.column * side_length) + local_position.column
+      }
+    ;;
+
+    let compute_for_face ~init normal_map direction ~side_length ~face_position face =
+      let all_local =
+        let%bind.Sequence row = Sequence.range 0 side_length in
+        let%map.Sequence column = Sequence.range 0 side_length in
+        { Pos.row; column }
+      in
+      Sequence.fold all_local ~init ~f:(fun map local_position ->
+          let direction, neighbor, neighbor_face_position =
+            next_step
+              normal_map
+              direction
+              ~local_position
+              ~face_position
+              ~side_length
+              face
+          in
+          (* We should only be adding these once, so add_exn as a sanity check *)
+          Map.add_exn
+            map
+            ~key:(global_position ~local_position ~face_position ~side_length)
+            ~data:
+              ( global_position
+                  ~local_position:neighbor
+                  ~face_position:neighbor_face_position
+                  ~side_length
+              , direction ))
+    ;;
+
+    let compute_for_all_faces normal_map direction ~side_length =
+      Map.fold
+        normal_map
+        ~init:Pos.Map.empty
+        ~f:(fun ~key:_ ~data:(orientation, face_position) init ->
+          compute_for_face
+            ~init
+            normal_map
+            direction
+            ~side_length
+            ~face_position
+            orientation)
+    ;;
+
+    let preprocess input =
+      let normalized_faces, side_length =
+        compute_normalized_faces_and_side_length input
+      in
+      let normal_map = fold normalized_faces in
+      { Preprocessed.top_left_free = top_left_free input
+      ; walls = walls input
+      ; right = compute_for_all_faces normal_map Right ~side_length
+      ; left = compute_for_all_faces normal_map Left ~side_length
+      ; up = compute_for_all_faces normal_map Up ~side_length
+      ; down = compute_for_all_faces normal_map Down ~side_length
+      }
+    ;;
+  end
+
   let movement_map (preprocessed : Preprocessed.t) ~direction =
     match (direction : Direction.t) with
     | Up -> preprocessed.up
@@ -3192,12 +3337,16 @@ module Day_22 = struct
   ;;
 
   let rec simulate_action ~walls ~movement_map ~direction ~position = function
-    | Action.Rotate rotation -> Direction.rotate direction rotation, position
+    | Action.Rotate rotation ->
+      let direction = Direction.rotate direction rotation in
+      direction, position
     | Step n ->
       if n = 0
       then direction, position
       else (
-        let next_position, next_direction = Map.find_exn movement_map position in
+        let next_position, next_direction =
+          Map.find_exn (movement_map ~direction) position
+        in
         if Set.mem walls next_position
         then direction, position
         else
@@ -3216,7 +3365,7 @@ module Day_22 = struct
       ~f:(fun (direction, position) action ->
         simulate_action
           ~walls:preprocessed.walls
-          ~movement_map:(movement_map preprocessed ~direction)
+          ~movement_map:(movement_map preprocessed)
           ~direction
           ~position
           action)
@@ -3233,7 +3382,16 @@ module Day_22 = struct
     ;;
   end
 
-  module Part_2 = Framework.Unimplemented
+  module Part_2 = struct
+    include Int_result
+
+    let run input =
+      let direction, pos =
+        simulate_actions (Part_2_preprocess.preprocess input) input.actions
+      in
+      Direction.score direction + ((pos.row + 1) * 1000) + ((pos.column + 1) * 4)
+    ;;
+  end
 end
 
 let () = Framework.register ~day:22 (module Day_22)
