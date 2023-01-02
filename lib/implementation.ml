@@ -3516,4 +3516,164 @@ module Day_23 = struct
 end
 
 let () = Framework.register ~day:23 (module Day_23)
+
+module Day_24 = struct
+  module Pos = struct
+    module T = struct
+      type t = int * int [@@deriving sexp_of, compare]
+    end
+
+    include T
+    include Comparable.Make_plain (T)
+
+    module O = struct
+      let ( + ) (a, b) (c, d) = a + c, b + d
+    end
+
+    include O
+  end
+
+  let up = -1, 0
+  let down = 1, 0
+  let left = 0, -1
+  let right = 0, 1
+
+  module Input = struct
+    type t =
+      { height : int (* Including walls *)
+      ; width : int (* Including walls *)
+      ; blizzards : Pos.t Pos.Map.t (* map from position to position diff *)
+      }
+    [@@deriving sexp_of, compare]
+
+    let load in_channel =
+      let lines = In_channel.input_lines in_channel in
+      let height = List.length lines in
+      let width = String.length (List.hd_exn lines) in
+      let blizzards =
+        List.foldi lines ~init:Pos.Map.empty ~f:(fun row positions line ->
+            String.foldi line ~init:positions ~f:(fun column positions -> function
+              | '>' -> Map.add_exn positions ~key:(row, column) ~data:right
+              | '^' -> Map.add_exn positions ~key:(row, column) ~data:up
+              | '<' -> Map.add_exn positions ~key:(row, column) ~data:left
+              | 'v' -> Map.add_exn positions ~key:(row, column) ~data:down
+              | _ -> positions))
+      in
+      { height; width; blizzards }
+    ;;
+  end
+
+  (* This assumes no blizzard can escape, and that blizzards are confined to the inner rectangle *)
+  let fix_position_for_blizzard (row, column) ~width ~height =
+    if row <= 0
+    then height - 2, column
+    else if row >= height - 1
+    then 1, column
+    else if column <= 0
+    then row, width - 2
+    else if column >= width - 1
+    then row, 1
+    else row, column
+  ;;
+
+  let human_within_bounds (row, column) ~width ~height =
+    (row = 0 && column = 1)
+    || (row = height - 1 && column = width - 2)
+    || (row >= 1 && row <= height - 2 && column >= 1 && column <= width - 2)
+  ;;
+
+  let simulate_blizzard initial_blizzard_locations ~width ~height =
+    Staged.stage
+    @@ Memo.recursive ~hashable:Int.hashable (fun simulate -> function
+         | 0 -> Map.map initial_blizzard_locations ~f:List.return
+         | n ->
+           let previous_locations = simulate (n - 1) in
+           let map =
+             Map.fold
+               previous_locations
+               ~init:Pos.Map.empty
+               ~f:(fun ~key:location ~data:directions map ->
+                 List.fold directions ~init:map ~f:(fun map direction ->
+                     let new_position =
+                       fix_position_for_blizzard
+                         Pos.O.(location + direction)
+                         ~width
+                         ~height
+                     in
+                     Map.add_multi map ~key:new_position ~data:direction))
+           in
+           map)
+  ;;
+
+  module Explored = struct
+    module T = struct
+      type t =
+        { position : Pos.t
+        ; minute : int
+        }
+      [@@deriving sexp_of, compare]
+    end
+
+    include T
+    include Comparable.Make_plain (T)
+  end
+
+  let start = 0, 1
+  let target ~width ~height = height - 1, width - 2
+
+  let best_path { Input.width; height; blizzards } targets =
+    let start = { Explored.position = start; minute = 0 } in
+    let simulate_blizzard =
+      simulate_blizzard blizzards ~width ~height |> Staged.unstage
+    in
+    let rec loop queue visited ~target =
+      match Queue.dequeue queue with
+      | None -> raise_s [%message "No path found"]
+      | Some ({ Explored.position; minute } as node) ->
+        if Pos.equal position target
+        then node
+        else (
+          let minute = minute + 1 in
+          let blizzard_map = simulate_blizzard minute in
+          List.fold
+            ~init:visited
+            [ 0, 0; up; down; left; right ]
+            ~f:(fun visited direction ->
+              let position = Pos.O.(position + direction) in
+              let node = { Explored.position; minute } in
+              if human_within_bounds position ~width ~height
+                 && (not (Map.mem blizzard_map position))
+                 && not (Set.mem visited node)
+              then (
+                Queue.enqueue queue node;
+                Set.add visited node)
+              else visited)
+          |> loop queue ~target)
+    in
+    let result =
+      List.fold targets ~init:start ~f:(fun start target ->
+          let queue = Queue.singleton start in
+          let visited = Explored.Set.singleton start in
+          loop queue visited ~target)
+    in
+    result.minute
+  ;;
+
+  module Part_1 = struct
+    include Int_result
+
+    let run input = best_path input [ target ~width:input.width ~height:input.height ]
+  end
+
+  module Part_2 = struct
+    include Int_result
+
+    let run (input : Input.t) =
+      let target = target ~width:input.width ~height:input.height in
+      best_path input [ target; start; target ]
+    ;;
+  end
+end
+
+let () = Framework.register ~day:24 (module Day_24)
 let link () = ()
