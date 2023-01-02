@@ -3015,10 +3015,9 @@ module Day_22 = struct
        ((Same Column) (Flip Row))) |}]
   ;;
 
-  let adjust_position
+  let adjust_position_no_reset
       ~(original_coordinates : Cube_face.t)
       ~(desired_coordinates : Cube_face.t)
-      ~side_length
       { Pos.row; column }
     =
     let row_adjustment, column_adjustment =
@@ -3034,19 +3033,53 @@ module Day_22 = struct
       | `Flip -> -value
       | `Same -> value
     in
-    reset_coordinates
-      { row = compute_adjustment row_adjustment
-      ; column = compute_adjustment column_adjustment
-      }
+    { Pos.row = compute_adjustment row_adjustment
+    ; column = compute_adjustment column_adjustment
+    }
+  ;;
+
+  let adjust_position
+      ~(original_coordinates : Cube_face.t)
+      ~(desired_coordinates : Cube_face.t)
       ~side_length
+      pos
+    =
+    adjust_position_no_reset ~original_coordinates ~desired_coordinates pos
+    |> reset_coordinates ~side_length
+  ;;
+
+  let adjust_direction
+      ~(original_coordinates : Cube_face.t)
+      ~(desired_coordinates : Cube_face.t)
+      (direction : Direction.t)
+      : Direction.t
+    =
+    let original_direction : Pos.t =
+      match direction with
+      | Right -> { row = 0; column = 1 }
+      | Left -> { row = 0; column = -1 }
+      | Up -> { row = -1; column = 0 }
+      | Down -> { row = 1; column = 0 }
+    in
+    match
+      adjust_position_no_reset
+        ~original_coordinates
+        ~desired_coordinates
+        original_direction
+    with
+    | { row = 0; column = 1 } -> Right
+    | { row = 0; column = -1 } -> Left
+    | { row = -1; column = 0 } -> Up
+    | { row = 1; column = 0 } -> Down
+    | pos -> raise_s [%message "Invalid direction post adjustment" (pos : Pos.t)]
   ;;
 
   module Preprocessed = struct
     type t =
-      { right : Pos.t Pos.Map.t
-      ; left : Pos.t Pos.Map.t
-      ; up : Pos.t Pos.Map.t
-      ; down : Pos.t Pos.Map.t
+      { right : (Pos.t * Direction.t) Pos.Map.t
+      ; left : (Pos.t * Direction.t) Pos.Map.t
+      ; up : (Pos.t * Direction.t) Pos.Map.t
+      ; down : (Pos.t * Direction.t) Pos.Map.t
       ; walls : Pos.Set.t
       ; top_left_free : Pos.t
       }
@@ -3067,81 +3100,88 @@ module Day_22 = struct
           | Some `Wall -> Set.add walls (Pos.of_indices ~row ~column)))
   ;;
 
-  let array_foldi_right array ~init ~f =
-    let start = Array.length array - 1 in
-    Array.fold_right array ~init:(start, init) ~f:(fun v (i, init) -> i - 1, f i init v)
-    |> snd
-  ;;
+  module Part_1_preprocess = struct
+    let array_foldi_right array ~init ~f =
+      let start = Array.length array - 1 in
+      Array.fold_right array ~init:(start, init) ~f:(fun v (i, init) -> i - 1, f i init v)
+      |> snd
+    ;;
 
-  let compute_horizontal ~line_foldi (input : Input.t) =
-    Array.foldi input.grid ~init:Pos.Map.empty ~f:(fun row next_steps line ->
-        let minimum, last, next_steps =
-          line_foldi
-            line
-            ~init:(None, None, next_steps)
-            ~f:(fun column (minimum, previous, next_steps) -> function
-            | None -> minimum, previous, next_steps
-            | Some (`Open | `Wall) ->
-              let current_position = Pos.of_indices ~row ~column in
-              let minimum =
-                match minimum with
-                | None -> Some current_position
-                | Some _ -> minimum
-              in
-              let next_steps =
-                match previous with
-                | None -> next_steps
-                | Some previous -> Map.set next_steps ~key:previous ~data:current_position
-              in
-              minimum, Some current_position, next_steps)
-        in
-        Map.set next_steps ~key:(Option.value_exn last) ~data:(Option.value_exn minimum))
-  ;;
+    let compute_horizontal ~(direction : Direction.t) ~line_foldi (input : Input.t) =
+      Array.foldi input.grid ~init:Pos.Map.empty ~f:(fun row next_steps line ->
+          let minimum, last, next_steps =
+            line_foldi
+              line
+              ~init:(None, None, next_steps)
+              ~f:(fun column (minimum, previous, next_steps) -> function
+              | None -> minimum, previous, next_steps
+              | Some (`Open | `Wall) ->
+                let current_position = Pos.of_indices ~row ~column in
+                let minimum =
+                  match minimum with
+                  | None -> Some current_position
+                  | Some _ -> minimum
+                in
+                let next_steps =
+                  match previous with
+                  | None -> next_steps
+                  | Some previous ->
+                    Map.set next_steps ~key:previous ~data:(current_position, direction)
+                in
+                minimum, Some current_position, next_steps)
+          in
+          Map.set
+            next_steps
+            ~key:(Option.value_exn last)
+            ~data:(Option.value_exn minimum, direction))
+    ;;
 
-  let compute_right = compute_horizontal ~line_foldi:Array.foldi
-  let compute_left = compute_horizontal ~line_foldi:array_foldi_right
+    let compute_right = compute_horizontal ~direction:Right ~line_foldi:Array.foldi
+    let compute_left = compute_horizontal ~direction:Left ~line_foldi:array_foldi_right
 
-  let compute_vertical ~column_fold (input : Input.t) =
-    let minimums, previous, next_steps =
-      column_fold
-        input.grid
-        ~init:(Int.Map.empty, Int.Map.empty, Pos.Map.empty)
-        ~f:(fun row (minimums, previous, next_steps) line ->
-          Array.foldi
-            line
-            ~init:(minimums, previous, next_steps)
-            ~f:(fun column (minimums, previous, next_steps) -> function
-            | None -> minimums, previous, next_steps
-            | Some (`Open | `Wall) ->
-              let current_position = Pos.of_indices ~row ~column in
-              let minimums =
-                match Map.add minimums ~key:column ~data:current_position with
-                | `Duplicate -> minimums
-                | `Ok minimums -> minimums
-              in
-              let next_steps =
-                match Map.find previous column with
-                | None -> next_steps
-                | Some previous -> Map.set next_steps ~key:previous ~data:current_position
-              in
-              minimums, Map.set previous ~key:column ~data:current_position, next_steps))
-    in
-    Map.fold previous ~init:next_steps ~f:(fun ~key:column ~data next_steps ->
-        Map.set next_steps ~key:data ~data:(Map.find_exn minimums column))
-  ;;
+    let compute_vertical ~(direction : Direction.t) ~column_fold (input : Input.t) =
+      let minimums, previous, next_steps =
+        column_fold
+          input.grid
+          ~init:(Int.Map.empty, Int.Map.empty, Pos.Map.empty)
+          ~f:(fun row (minimums, previous, next_steps) line ->
+            Array.foldi
+              line
+              ~init:(minimums, previous, next_steps)
+              ~f:(fun column (minimums, previous, next_steps) -> function
+              | None -> minimums, previous, next_steps
+              | Some (`Open | `Wall) ->
+                let current_position = Pos.of_indices ~row ~column in
+                let minimums =
+                  match Map.add minimums ~key:column ~data:current_position with
+                  | `Duplicate -> minimums
+                  | `Ok minimums -> minimums
+                in
+                let next_steps =
+                  match Map.find previous column with
+                  | None -> next_steps
+                  | Some previous ->
+                    Map.set next_steps ~key:previous ~data:(current_position, direction)
+                in
+                minimums, Map.set previous ~key:column ~data:current_position, next_steps))
+      in
+      Map.fold previous ~init:next_steps ~f:(fun ~key:column ~data next_steps ->
+          Map.set next_steps ~key:data ~data:(Map.find_exn minimums column, direction))
+    ;;
 
-  let compute_down = compute_vertical ~column_fold:Array.foldi
-  let compute_up = compute_vertical ~column_fold:array_foldi_right
+    let compute_down = compute_vertical ~column_fold:Array.foldi ~direction:Down
+    let compute_up = compute_vertical ~column_fold:array_foldi_right ~direction:Up
 
-  let preprocess input =
-    { Preprocessed.top_left_free = top_left_free input
-    ; walls = walls input
-    ; right = compute_right input
-    ; left = compute_left input
-    ; up = compute_up input
-    ; down = compute_down input
-    }
-  ;;
+    let preprocess input =
+      { Preprocessed.top_left_free = top_left_free input
+      ; walls = walls input
+      ; right = compute_right input
+      ; left = compute_left input
+      ; up = compute_up input
+      ; down = compute_down input
+      }
+    ;;
+  end
 
   let movement_map (preprocessed : Preprocessed.t) ~direction =
     match (direction : Direction.t) with
@@ -3157,14 +3197,14 @@ module Day_22 = struct
       if n = 0
       then direction, position
       else (
-        let next_position = Map.find_exn movement_map position in
+        let next_position, next_direction = Map.find_exn movement_map position in
         if Set.mem walls next_position
         then direction, position
         else
           simulate_action
             ~walls
             ~movement_map
-            ~direction
+            ~direction:next_direction
             ~position:next_position
             (Step (n - 1)))
   ;;
@@ -3186,7 +3226,9 @@ module Day_22 = struct
     include Int_result
 
     let run input =
-      let direction, pos = simulate_actions (preprocess input) input.actions in
+      let direction, pos =
+        simulate_actions (Part_1_preprocess.preprocess input) input.actions
+      in
       Direction.score direction + ((pos.row + 1) * 1000) + ((pos.column + 1) * 4)
     ;;
   end
