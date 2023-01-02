@@ -3676,4 +3676,69 @@ module Day_24 = struct
 end
 
 let () = Framework.register ~day:24 (module Day_24)
+
+module Day_25 = struct
+  module Snafu = struct
+    let base = 5
+
+    let of_string s =
+      String.to_list_rev s
+      |> List.fold ~init:(1, 0) ~f:(fun (position, total) char ->
+             let total =
+               match char with
+               | '0' -> total
+               | '1' -> total + position
+               | '2' -> total + (position * 2)
+               | '-' -> total - position
+               | '=' -> total - (position * 2)
+               | c -> raise_s [%message "Unrecognized character" (c : char)]
+             in
+             position * base, total)
+      |> snd
+    ;;
+
+    let to_string t =
+      if t = 0
+      then "0"
+      else if t < 0
+      then raise_s [%message "Cannot convert negative numbers" (t : int)]
+      else (
+        let rec loop ~acc n =
+          match n with
+          | 0 -> String.of_char_list acc
+          | n ->
+            let remainder = n % base in
+            let top = n / base in
+            let char, top =
+              match remainder with
+              | 0 -> '0', top
+              | 1 -> '1', top
+              | 2 -> '2', top
+              | 3 -> '=', top + 1
+              | 4 -> '-', top + 1
+              | n -> raise_s [%message "Bad remainder" (n : int)]
+            in
+            loop ~acc:(char :: acc) top
+        in
+        loop ~acc:[] t)
+    ;;
+  end
+
+  module Input = struct
+    type t = int list [@@deriving sexp_of, compare]
+
+    let load in_channel = In_channel.input_lines in_channel |> List.map ~f:Snafu.of_string
+  end
+
+  module Part_1 = struct
+    type t = int
+
+    let show t = Snafu.to_string t |> print_endline
+    let run input = List.sum (module Int) ~f:Fn.id input
+  end
+
+  module Part_2 = Framework.Unimplemented
+end
+
+let () = Framework.register ~day:25 (module Day_25)
 let link () = ()
