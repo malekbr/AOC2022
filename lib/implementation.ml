@@ -2695,4 +2695,504 @@ module Day_21 = struct
 end
 
 let () = Framework.register ~day:21 (module Day_21)
+
+module Day_22 = struct
+  module Rotation = struct
+    type t =
+      | Right
+      | Left
+    [@@deriving sexp_of, compare]
+  end
+
+  module Direction = struct
+    type t =
+      | Right
+      | Down
+      | Left
+      | Up
+    [@@deriving sexp_of, compare]
+
+    let rotate t rotation =
+      match t, (rotation : Rotation.t) with
+      | Right, Right -> Down
+      | Right, Left -> Up
+      | Down, Right -> Left
+      | Down, Left -> Right
+      | Left, Right -> Up
+      | Left, Left -> Down
+      | Up, Right -> Right
+      | Up, Left -> Left
+    ;;
+
+    let score = function
+      | Right -> 0
+      | Down -> 1
+      | Left -> 2
+      | Up -> 3
+    ;;
+  end
+
+  module Action = struct
+    type t =
+      | Step of int
+      | Rotate of Rotation.t
+    [@@deriving sexp_of, compare, variants]
+  end
+
+  module Input = struct
+    type t =
+      { grid : [ `Wall | `Open ] option array array
+      ; actions : Action.t list
+      }
+    [@@deriving sexp_of, compare]
+
+    module Parse = struct
+      open! Angstrom
+
+      let grid_element =
+        choice
+          [ char ' ' *> return None
+          ; char '.' *> return (Some `Open)
+          ; char '#' *> return (Some `Wall)
+          ]
+      ;;
+
+      let grid_line = many1 grid_element |> lift Array.of_list
+      let grid = many1 (grid_line <* end_of_line) |> lift Array.of_list
+      let number = take_while1 Char.is_digit |> map ~f:Int.of_string
+
+      let direction =
+        choice Rotation.[ char 'R' *> return Right; char 'L' *> return Left ]
+      ;;
+
+      let action = choice [ lift Action.step number; lift Action.rotate direction ]
+      let actions = many action
+
+      let parser =
+        let%mapn.Angstrom grid = grid <* end_of_line
+        and actions = actions <* end_of_line in
+        { grid; actions }
+      ;;
+
+      let parse s = Angstrom.parse_string ~consume:All parser s |> Result.ok_or_failwith
+    end
+
+    let load in_channel = In_channel.input_all in_channel |> Parse.parse
+  end
+
+  module Pos = struct
+    module T = struct
+      type t =
+        { row : int
+        ; column : int
+        }
+      [@@deriving sexp_of, compare]
+    end
+
+    include T
+    include Comparable.Make_plain (T)
+
+    let of_indices ~row ~column = { row; column }
+  end
+
+  module Vec3 = struct
+    module T = struct
+      type t =
+        { x : int
+        ; y : int
+        ; z : int
+        }
+      [@@deriving sexp_of, compare]
+    end
+
+    include T
+    include Comparable.Make_plain (T)
+
+    let zero = { x = 0; y = 0; z = 0 }
+
+    let cross a b =
+      { x = (a.y * b.z) - (a.z * b.y)
+      ; y = (a.z * b.x) - (a.x * b.z)
+      ; z = (a.x * b.y) - (a.y * b.x)
+      }
+    ;;
+
+    let parallel a b = equal (cross a b) zero
+  end
+
+  module Cube_face = struct
+    type t =
+      { up : Vec3.t
+      ; right : Vec3.t
+      }
+    [@@deriving sexp_of, compare]
+
+    let normal t = Vec3.cross t.right t.up
+
+    let rotate t direction =
+      match (direction : Direction.t) with
+      | Right -> { t with right = Vec3.cross t.up t.right }
+      | Left -> { t with right = Vec3.cross t.right t.up }
+      | Up -> { t with up = Vec3.cross t.up t.right }
+      | Down -> { t with up = Vec3.cross t.right t.up }
+    ;;
+
+    let%expect_test _ =
+      (* Based on the cube map in wikipedia *)
+      let start = { up = { x = 0; y = 1; z = 0 }; right = { x = 1; y = 0; z = 0 } } in
+      print_s [%message (normal start : Vec3.t)];
+      [%expect {| ("normal start" ((x 0) (y 0) (z 1))) |}];
+      print_s [%message (rotate start Left : t)];
+      [%expect
+        {| ("rotate start Left" ((up ((x 0) (y 1) (z 0))) (right ((x 0) (y 0) (z 1))))) |}];
+      print_s [%message (rotate start Up : t)];
+      [%expect
+        {| ("rotate start Up" ((up ((x 0) (y 0) (z -1))) (right ((x 1) (y 0) (z 0))))) |}];
+      print_s [%message (rotate start Down : t)];
+      [%expect
+        {| ("rotate start Down" ((up ((x 0) (y 0) (z 1))) (right ((x 1) (y 0) (z 0))))) |}];
+      print_s [%message (rotate start Right : t)];
+      [%expect
+        {|
+          ("rotate start Right"
+           ((up ((x 0) (y 1) (z 0))) (right ((x 0) (y 0) (z -1))))) |}];
+      print_s [%message (rotate (rotate start Right) Right : t)];
+      [%expect
+        {|
+          ("rotate (rotate start Right) Right"
+           ((up ((x 0) (y 1) (z 0))) (right ((x -1) (y 0) (z 0))))) |}]
+    ;;
+  end
+
+  (* Normalized face coordinates are such that each square is 1x1 wide.
+   * We want to return a mapping from position to the normal vector which
+   * uniquely identifies a face (since we're always folding on the outside)
+   * and a map from the normal vector to the coordinates (Cube_face.t) which
+   * will indicate the orientation in which the input maps to the cube face
+   * and the normalized face coordinate which will allow us to locate the next
+   * step post rotation.
+   *)
+  let fold normalized_face_coordinates =
+    let start_face =
+      { Cube_face.up = { x = 0; y = 1; z = 0 }; right = { x = 1; y = 0; z = 0 } }
+    in
+    let neighbors (pos : Pos.t) =
+      [ { pos with column = pos.column + 1 }, Direction.Right
+      ; { pos with column = pos.column - 1 }, Left
+      ; { pos with row = pos.row - 1 }, Up
+      ; { pos with row = pos.row + 1 }, Down
+      ]
+      |> List.filter ~f:(fun (pos, _direction) -> Set.mem normalized_face_coordinates pos)
+    in
+    let start = Set.min_elt_exn normalized_face_coordinates in
+    let explored = Pos.Set.singleton start in
+    let rec loop explored pos_map normal_map = function
+      | [] -> pos_map, normal_map
+      | (position, face) :: to_explore ->
+        let normal = Cube_face.normal face in
+        let pos_map = Map.add_exn pos_map ~key:position ~data:normal in
+        let normal_map = Map.add_exn normal_map ~key:normal ~data:(face, position) in
+        let explored, to_explore =
+          neighbors position
+          |> List.fold
+               ~init:(explored, to_explore)
+               ~f:(fun (explored, to_explore) (pos, direction) ->
+                 if Set.mem explored pos
+                 then explored, to_explore
+                 else (
+                   let explored = Set.add explored pos in
+                   let face = Cube_face.rotate face direction in
+                   explored, (pos, face) :: to_explore))
+        in
+        loop explored pos_map normal_map to_explore
+    in
+    loop explored Pos.Map.empty Vec3.Map.empty [ start, start_face ]
+  ;;
+
+  let%expect_test _ =
+    let input_faces =
+      [ 0, 2; 1, 0; 1, 1; 1, 2; 2, 2; 2, 3 ]
+      |> List.map ~f:(fun (row, column) -> Pos.of_indices ~row ~column)
+      |> Pos.Set.of_list
+    in
+    let position_map, normal_map = fold input_faces in
+    print_s
+      [%message
+        (position_map : Vec3.t Pos.Map.t) (normal_map : (Cube_face.t * Pos.t) Vec3.Map.t)];
+    [%expect
+      {|
+      ((position_map
+        ((((row 0) (column 2)) ((x 0) (y 0) (z 1)))
+         (((row 1) (column 0)) ((x 0) (y 1) (z 0)))
+         (((row 1) (column 1)) ((x -1) (y 0) (z 0)))
+         (((row 1) (column 2)) ((x 0) (y -1) (z 0)))
+         (((row 2) (column 2)) ((x 0) (y 0) (z -1)))
+         (((row 2) (column 3)) ((x 1) (y 0) (z 0)))))
+       (normal_map
+        ((((x -1) (y 0) (z 0))
+          (((up ((x 0) (y 0) (z 1))) (right ((x 0) (y -1) (z 0))))
+           ((row 1) (column 1))))
+         (((x 0) (y -1) (z 0))
+          (((up ((x 0) (y 0) (z 1))) (right ((x 1) (y 0) (z 0))))
+           ((row 1) (column 2))))
+         (((x 0) (y 0) (z -1))
+          (((up ((x 0) (y -1) (z 0))) (right ((x 1) (y 0) (z 0))))
+           ((row 2) (column 2))))
+         (((x 0) (y 0) (z 1))
+          (((up ((x 0) (y 1) (z 0))) (right ((x 1) (y 0) (z 0))))
+           ((row 0) (column 2))))
+         (((x 0) (y 1) (z 0))
+          (((up ((x 0) (y 0) (z 1))) (right ((x -1) (y 0) (z 0))))
+           ((row 1) (column 0))))
+         (((x 1) (y 0) (z 0))
+          (((up ((x 0) (y -1) (z 0))) (right ((x 0) (y 0) (z 1))))
+           ((row 2) (column 3))))))) |}]
+  ;;
+
+  let coordinates_in_range { Pos.row; column } ~side_length =
+    row >= 0 && row < side_length && column >= 0 && column < side_length
+  ;;
+
+  let reset_coordinates { Pos.row; column } ~side_length =
+    { Pos.row = row % side_length; column = column % side_length }
+  ;;
+
+  (* Returns action for row coordinates and action for column coordinates. *)
+  let coordinate_adjustment
+      ~(original_coordinates : Cube_face.t)
+      ~(desired_coordinates : Cube_face.t)
+    =
+    if Vec3.parallel original_coordinates.up desired_coordinates.up
+    then (
+      assert (Vec3.parallel original_coordinates.right desired_coordinates.right);
+      ( (if Vec3.equal original_coordinates.up desired_coordinates.up
+        then `Same, `Row
+        else `Flip, `Row)
+      , if Vec3.equal original_coordinates.right desired_coordinates.right
+        then `Same, `Column
+        else `Flip, `Column ))
+    else (
+      assert (Vec3.parallel original_coordinates.up desired_coordinates.right);
+      assert (Vec3.parallel original_coordinates.right desired_coordinates.up);
+      ( (if Vec3.equal original_coordinates.up desired_coordinates.right
+        then `Same, `Column
+        else `Flip, `Column)
+      , if Vec3.equal original_coordinates.right desired_coordinates.up
+        then `Same, `Row
+        else `Flip, `Row ))
+  ;;
+
+  let%expect_test _ =
+    let sexp_of_adjustment = [%sexp_of: [ `Same | `Flip ] * [ `Row | `Column ]] in
+    let face1 =
+      { Cube_face.up = { x = 0; y = 1; z = 0 }; right = { x = 1; y = 0; z = 0 } }
+    in
+    let face2 =
+      { Cube_face.up = { x = 0; y = 1; z = 0 }; right = { x = -1; y = 0; z = 0 } }
+    in
+    let face3 =
+      { Cube_face.up = { x = -1; y = 0; z = 0 }; right = { x = 0; y = 1; z = 0 } }
+    in
+    print_s
+      [%message
+        (coordinate_adjustment ~original_coordinates:face1 ~desired_coordinates:face1
+          : adjustment * adjustment)];
+    print_s
+      [%message
+        (coordinate_adjustment ~original_coordinates:face1 ~desired_coordinates:face2
+          : adjustment * adjustment)];
+    print_s
+      [%message
+        (coordinate_adjustment ~original_coordinates:face1 ~desired_coordinates:face3
+          : adjustment * adjustment)];
+    [%expect
+      {|
+      ("coordinate_adjustment ~original_coordinates:face1 ~desired_coordinates:face1"
+       ((Same Row) (Same Column)))
+      ("coordinate_adjustment ~original_coordinates:face1 ~desired_coordinates:face2"
+       ((Same Row) (Flip Column)))
+      ("coordinate_adjustment ~original_coordinates:face1 ~desired_coordinates:face3"
+       ((Same Column) (Flip Row))) |}]
+  ;;
+
+  let adjust_position
+      ~(original_coordinates : Cube_face.t)
+      ~(desired_coordinates : Cube_face.t)
+      ~side_length
+      { Pos.row; column }
+    =
+    let row_adjustment, column_adjustment =
+      coordinate_adjustment ~original_coordinates ~desired_coordinates
+    in
+    let compute_adjustment (sign, source) =
+      let value =
+        match source with
+        | `Row -> row
+        | `Column -> column
+      in
+      match sign with
+      | `Flip -> -value
+      | `Same -> value
+    in
+    reset_coordinates
+      { row = compute_adjustment row_adjustment
+      ; column = compute_adjustment column_adjustment
+      }
+      ~side_length
+  ;;
+
+  module Preprocessed = struct
+    type t =
+      { right : Pos.t Pos.Map.t
+      ; left : Pos.t Pos.Map.t
+      ; up : Pos.t Pos.Map.t
+      ; down : Pos.t Pos.Map.t
+      ; walls : Pos.Set.t
+      ; top_left_free : Pos.t
+      }
+    [@@deriving sexp_of, compare]
+  end
+
+  let top_left_free (input : Input.t) =
+    Array.find_mapi_exn input.grid ~f:(fun row line ->
+        Array.find_mapi line ~f:(fun column -> function
+          | None | Some `Wall -> None
+          | Some `Open -> Some (Pos.of_indices ~row ~column)))
+  ;;
+
+  let walls (input : Input.t) =
+    Array.foldi input.grid ~init:Pos.Set.empty ~f:(fun row walls line ->
+        Array.foldi line ~init:walls ~f:(fun column walls -> function
+          | None | Some `Open -> walls
+          | Some `Wall -> Set.add walls (Pos.of_indices ~row ~column)))
+  ;;
+
+  let array_foldi_right array ~init ~f =
+    let start = Array.length array - 1 in
+    Array.fold_right array ~init:(start, init) ~f:(fun v (i, init) -> i - 1, f i init v)
+    |> snd
+  ;;
+
+  let compute_horizontal ~line_foldi (input : Input.t) =
+    Array.foldi input.grid ~init:Pos.Map.empty ~f:(fun row next_steps line ->
+        let minimum, last, next_steps =
+          line_foldi
+            line
+            ~init:(None, None, next_steps)
+            ~f:(fun column (minimum, previous, next_steps) -> function
+            | None -> minimum, previous, next_steps
+            | Some (`Open | `Wall) ->
+              let current_position = Pos.of_indices ~row ~column in
+              let minimum =
+                match minimum with
+                | None -> Some current_position
+                | Some _ -> minimum
+              in
+              let next_steps =
+                match previous with
+                | None -> next_steps
+                | Some previous -> Map.set next_steps ~key:previous ~data:current_position
+              in
+              minimum, Some current_position, next_steps)
+        in
+        Map.set next_steps ~key:(Option.value_exn last) ~data:(Option.value_exn minimum))
+  ;;
+
+  let compute_right = compute_horizontal ~line_foldi:Array.foldi
+  let compute_left = compute_horizontal ~line_foldi:array_foldi_right
+
+  let compute_vertical ~column_fold (input : Input.t) =
+    let minimums, previous, next_steps =
+      column_fold
+        input.grid
+        ~init:(Int.Map.empty, Int.Map.empty, Pos.Map.empty)
+        ~f:(fun row (minimums, previous, next_steps) line ->
+          Array.foldi
+            line
+            ~init:(minimums, previous, next_steps)
+            ~f:(fun column (minimums, previous, next_steps) -> function
+            | None -> minimums, previous, next_steps
+            | Some (`Open | `Wall) ->
+              let current_position = Pos.of_indices ~row ~column in
+              let minimums =
+                match Map.add minimums ~key:column ~data:current_position with
+                | `Duplicate -> minimums
+                | `Ok minimums -> minimums
+              in
+              let next_steps =
+                match Map.find previous column with
+                | None -> next_steps
+                | Some previous -> Map.set next_steps ~key:previous ~data:current_position
+              in
+              minimums, Map.set previous ~key:column ~data:current_position, next_steps))
+    in
+    Map.fold previous ~init:next_steps ~f:(fun ~key:column ~data next_steps ->
+        Map.set next_steps ~key:data ~data:(Map.find_exn minimums column))
+  ;;
+
+  let compute_down = compute_vertical ~column_fold:Array.foldi
+  let compute_up = compute_vertical ~column_fold:array_foldi_right
+
+  let preprocess input =
+    { Preprocessed.top_left_free = top_left_free input
+    ; walls = walls input
+    ; right = compute_right input
+    ; left = compute_left input
+    ; up = compute_up input
+    ; down = compute_down input
+    }
+  ;;
+
+  let movement_map (preprocessed : Preprocessed.t) ~direction =
+    match (direction : Direction.t) with
+    | Up -> preprocessed.up
+    | Down -> preprocessed.down
+    | Left -> preprocessed.left
+    | Right -> preprocessed.right
+  ;;
+
+  let rec simulate_action ~walls ~movement_map ~direction ~position = function
+    | Action.Rotate rotation -> Direction.rotate direction rotation, position
+    | Step n ->
+      if n = 0
+      then direction, position
+      else (
+        let next_position = Map.find_exn movement_map position in
+        if Set.mem walls next_position
+        then direction, position
+        else
+          simulate_action
+            ~walls
+            ~movement_map
+            ~direction
+            ~position:next_position
+            (Step (n - 1)))
+  ;;
+
+  let simulate_actions preprocessed actions =
+    List.fold
+      actions
+      ~init:(Direction.Right, preprocessed.Preprocessed.top_left_free)
+      ~f:(fun (direction, position) action ->
+        simulate_action
+          ~walls:preprocessed.walls
+          ~movement_map:(movement_map preprocessed ~direction)
+          ~direction
+          ~position
+          action)
+  ;;
+
+  module Part_1 = struct
+    include Int_result
+
+    let run input =
+      let direction, pos = simulate_actions (preprocess input) input.actions in
+      Direction.score direction + ((pos.row + 1) * 1000) + ((pos.column + 1) * 4)
+    ;;
+  end
+
+  module Part_2 = Framework.Unimplemented
+end
+
+let () = Framework.register ~day:22 (module Day_22)
 let link () = ()
